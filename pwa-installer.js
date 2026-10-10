@@ -1,0 +1,1157 @@
+// חלק PWA (pwa-installer.js) – התקנת האפליקציה כ-PWA ותמיכה במערכות הפעלה שונות | HYPER CORE TECH
+(function initPwaInstaller(window) {
+  const App = window.NostrApp || (window.NostrApp = {});
+
+  // משתנים גלובליים
+  let deferredInstallPrompt = null;
+  let isInstalled = false;
+
+  // חלק זיהוי פלטפורמה (pwa-installer.js) – זיהוי סוג המכשיר ומערכת ההפעלה | HYPER CORE TECH
+  function getPlatformInfo() {
+    const ua = navigator.userAgent || '';
+    const isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+    const isAndroid = /Android/i.test(ua);
+    const isMac = /Macintosh|MacIntel|MacPPC|Mac68K/.test(ua);
+    const isWindows = /Win32|Win64|Windows|WinCE/.test(ua);
+    const isLinux = /Linux/.test(ua) && !isAndroid;
+    const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|Chromium/i.test(ua);
+    const isChrome = /Chrome|CriOS/i.test(ua) && !/Edge|Edg/i.test(ua);
+    const isFirefox = /Firefox/i.test(ua);
+    const isEdge = /Edge|Edg/i.test(ua);
+    
+    return {
+      isIOS,
+      isAndroid,
+      isMac,
+      isWindows,
+      isLinux,
+      isSafari,
+      isChrome,
+      isFirefox,
+      isEdge,
+      isMobile: isIOS || isAndroid,
+      isDesktop: isMac || isWindows || isLinux,
+    };
+  }
+
+  // חלק זיהוי מעטפת APK (pwa-installer.js) – WebView של האפליקציה המותקנת | HYPER CORE TECH
+  function isRunningInNativeShell() {
+    try {
+      if (window.SOS_NATIVE_SHELL) return true;
+      if (window.SosNativeShell && typeof window.SosNativeShell.isNativeShell === 'function') {
+        const v = window.SosNativeShell.isNativeShell();
+        return v === true || v === 'true';
+      }
+    } catch (_) {}
+    return /SOSNativeShell\//i.test(navigator.userAgent || '');
+  }
+
+  // חלק בדיקת התקנה (pwa-installer.js) – PWA standalone או APK native | HYPER CORE TECH
+  function checkIfInstalled() {
+    // מעטפת Android מותקנת = כבר «מותקן», לא להציג באנר התקנה | HYPER CORE TECH
+    if (isRunningInNativeShell()) {
+      return true;
+    }
+    // בדיקה דרך display-mode
+    if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+      return true;
+    }
+    // בדיקה דרך navigator.standalone (iOS Safari)
+    if (navigator.standalone === true) {
+      return true;
+    }
+    // בדיקה דרך document.referrer (Android TWA)
+    if (document.referrer && document.referrer.includes('android-app://')) {
+      return true;
+    }
+    return false;
+  }
+
+  // חלק רישום SW (pwa-installer.js) – רישום Service Worker | HYPER CORE TECH
+  async function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) {
+      console.warn('[PWA] Service Worker לא נתמך בדפדפן זה');
+      return null;
+    }
+    if (!window.isSecureContext) {
+      console.warn('[PWA] Service Worker דורש HTTPS');
+      return null;
+    }
+    try {
+      const owner = window.SOSServiceWorker;
+      if (!owner || typeof owner.register !== 'function') {
+        console.warn('[PWA] Service Worker owner missing');
+        return null;
+      }
+      const registration = await owner.register();
+      if (!registration) return null;
+      console.log('[PWA] Service Worker נרשם בהצלחה', registration.scope);
+      
+      // התקנה ראשונה בלבד — בלי כרטיסיית עדכון | HYPER CORE TECH
+      if (registration.waiting && !navigator.serviceWorker.controller) {
+        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      }
+
+      registration.addEventListener('updatefound', () => {
+        const newWorker = registration.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state !== 'installed') return;
+          if (!navigator.serviceWorker.controller) {
+            newWorker.postMessage({ type: 'SKIP_WAITING' });
+          }
+        });
+      });
+      
+      return registration;
+    } catch (err) {
+      console.error('[PWA] שגיאה ברישום Service Worker:', err);
+      return null;
+    }
+  }
+
+  // חלק beforeinstallprompt (pwa-installer.js) – האזנה לאירוע התקנה | HYPER CORE TECH
+  function getDeferredPrompt() {
+    if (!deferredInstallPrompt && window.deferredPwaPrompt) {
+      deferredInstallPrompt = window.deferredPwaPrompt;
+    }
+    return deferredInstallPrompt || window.deferredPwaPrompt || null;
+  }
+
+  function pwaToast(message) {
+    if (typeof App.showToast === 'function') {
+      App.showToast(message);
+      return;
+    }
+    console.log('[PWA]', message);
+  }
+
+  // חלק Push אחרי התקנה (pwa-installer.js) – חיוני להתראות עם מסך כבוי | HYPER CORE TECH
+  // forcePermissionPrompt=true רק אחרי התקנה טרייה – לא בכל פתיחת PWA | HYPER CORE TECH
+  function ensurePushAfterInstall(options) {
+    const forcePermissionPrompt = !!(options && options.forcePermissionPrompt);
+    if (forcePermissionPrompt) {
+      try {
+        localStorage.removeItem('push_modal_dismissed');
+      } catch (_) {}
+    }
+
+    const run = () => {
+      if (forcePermissionPrompt && typeof App.ensurePushReady === 'function') {
+        App.ensurePushReady();
+        return;
+      }
+      if (typeof App.initPushNotifications === 'function') {
+        App.initPushNotifications();
+        return;
+      }
+      if (typeof App.initPushSubscription === 'function') {
+        App.initPushSubscription();
+        return;
+      }
+      if (forcePermissionPrompt && typeof App.showPushPermissionModal === 'function') {
+        App.showPushPermissionModal();
+      }
+    };
+
+    setTimeout(run, 900);
+  }
+
+  function setupInstallPromptListener() {
+    console.log('[PWA] מאזין לאירוע beforeinstallprompt...');
+    
+    // בדיקה אם כבר יש prompt שמור מקודם (יכול לקרות אם הקוד נטען מאוחר)
+    if (window.deferredPwaPrompt) {
+      deferredInstallPrompt = window.deferredPwaPrompt;
+      console.log('[PWA] נמצא prompt שמור מקודם!');
+    }
+    
+    window.addEventListener('beforeinstallprompt', (event) => {
+      // מניעת הופעה אוטומטית של הבאנר
+      event.preventDefault();
+      // שמירת האירוע לשימוש מאוחר יותר
+      deferredInstallPrompt = event;
+      window.deferredPwaPrompt = event;
+      console.log('[PWA] ✅ אירוע beforeinstallprompt נתפס - הדפדפן תומך בהתקנה!');
+      
+      // עדכון כפתור ההתקנה בדסקטופ
+      const chatInstallBtn = document.getElementById('chatWelcomeInstallBtn');
+      if (chatInstallBtn) {
+        chatInstallBtn.classList.add('pwa-ready');
+        console.log('[PWA] כפתור התקנה מוכן');
+      }
+      
+      // הצגת כפתור התקנה אם קיים
+      showInstallButton();
+    });
+
+    // האזנה לאירוע התקנה מוצלחת
+    window.addEventListener('appinstalled', () => {
+      console.log('[PWA] האפליקציה הותקנה בהצלחה!');
+      isInstalled = true;
+      deferredInstallPrompt = null;
+      window.deferredPwaPrompt = null;
+      try {
+        localStorage.setItem('pwa_installed', 'true');
+      } catch (_) {}
+      const banner = document.getElementById('pwa-install-banner');
+      if (banner) banner.remove();
+      
+      pwaToast('האפליקציה הותקנה בהצלחה');
+      // קריטי: בלי מנוי Push אין התראות כשהמסך כבוי | HYPER CORE TECH
+      ensurePushAfterInstall({ forcePermissionPrompt: true });
+    });
+  }
+
+  // PUBLIC STABLE install target (initial Android install) — the one tracked APK on the site.
+  const NATIVE_APK_VERSION = '1.0.124';
+  const NATIVE_APK_FILE = `SOS-${NATIVE_APK_VERSION}.apk`;
+  const NATIVE_APK_URL = (typeof localStorage !== 'undefined' && localStorage.getItem('sos_apk_url'))
+    || `https://sos010.com/downloads/${NATIVE_APK_FILE}`;
+  const APK_VERSION_URL = './apk-version.json';
+
+  function isApkReleasePublished(data) {
+    return !!(data && data.published === true);
+  }
+
+  /**
+   * Validate a remote apk-version.json update release.
+   * NEVER falls back to PUBLIC STABLE (NATIVE_APK_*) URL for a newer advertised version.
+   * @returns {{ ok: true, release: object } | { ok: false, reason: string }}
+   */
+  function validateApkUpdateRelease(data) {
+    if (!data || typeof data !== 'object') {
+      return { ok: false, reason: 'missing' };
+    }
+    if (!isApkReleasePublished(data)) {
+      return { ok: false, reason: 'unpublished' };
+    }
+    const version = String(data.version || '').trim();
+    const versionCode = Number(data.versionCode) || 0;
+    const file = String(data.file || '').trim();
+    const url = String(data.url || '').trim();
+    if (!version || !/^\d+\.\d+\.\d+/.test(version)) {
+      return { ok: false, reason: 'bad-version' };
+    }
+    if (!(versionCode > 0)) {
+      return { ok: false, reason: 'bad-versionCode' };
+    }
+    if (!file || !url) {
+      return { ok: false, reason: 'missing-url-or-file' };
+    }
+    // File must match advertised version (SOS-1.0.114.apk ↔ 1.0.114).
+    const fileVerMatch = file.match(/SOS-(\d+\.\d+\.\d+)/i);
+    if (fileVerMatch && fileVerMatch[1] !== version) {
+      return { ok: false, reason: 'file-version-mismatch' };
+    }
+    // URL must not advertise a different apk-X.Y.Z release tag / file.
+    const urlTagMatch = url.match(/apk-(\d+\.\d+\.\d+)/i);
+    if (urlTagMatch && urlTagMatch[1] !== version) {
+      return { ok: false, reason: 'url-version-mismatch' };
+    }
+    if (url.includes(NATIVE_APK_FILE) && version !== NATIVE_APK_VERSION) {
+      return { ok: false, reason: 'stable-fallback-blocked' };
+    }
+    if (url.includes(`apk-${NATIVE_APK_VERSION}`) && version !== NATIVE_APK_VERSION) {
+      return { ok: false, reason: 'stable-fallback-blocked' };
+    }
+    let urlFile = '';
+    try {
+      urlFile = decodeURIComponent(String(url.split('?')[0].split('/').pop() || ''));
+    } catch (_e) {
+      urlFile = '';
+    }
+    if (urlFile !== file) {
+      return { ok: false, reason: 'url-file-mismatch' };
+    }
+    return {
+      ok: true,
+      release: { version, versionCode, file, url, published: true, channel: data.channel || 'production' },
+    };
+  }
+
+  function startNativeApkInstall() {
+    // Initial install only — always PUBLIC STABLE, not remote update metadata.
+    pwaToast(`מוריד את אפליקציית SOS ${NATIVE_APK_VERSION}…`);
+    try {
+      const link = document.createElement('a');
+      link.href = NATIVE_APK_URL;
+      link.setAttribute('download', NATIVE_APK_FILE);
+      link.rel = 'noopener';
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => link.remove(), 1000);
+    } catch (err) {
+      console.error('[PWA] APK download failed, fallback navigate', err);
+      window.location.href = NATIVE_APK_URL;
+    }
+    return { outcome: 'apk_download', url: NATIVE_APK_URL, file: NATIVE_APK_FILE, version: NATIVE_APK_VERSION };
+  }
+
+  // חלק מדריך דסקטופ (pwa-installer.js) – כשאין beforeinstallprompt | HYPER CORE TECH
+  function showDesktopInstallGuide() {
+    const existingDialog = document.getElementById('desktop-install-guide');
+    if (existingDialog) {
+      existingDialog.showModal?.() || (existingDialog.style.display = 'flex');
+      return;
+    }
+
+    const dialog = document.createElement('dialog');
+    dialog.id = 'desktop-install-guide';
+    dialog.className = 'pwa-install-dialog';
+    dialog.innerHTML = `
+      <div class="pwa-install-dialog__content">
+        <img src="./icons/sos-logo-mobile.png?v=20260802aa" alt="SOS" class="pwa-install-dialog__logo" width="64" height="64">
+        <h2>התקנה במחשב</h2>
+        <div class="pwa-install-steps">
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">1</span>
+            <span>פתחו את האתר ב־Chrome או Edge</span>
+          </div>
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">2</span>
+            <span>לחצו על תפריט הדפדפן (⋮) ובחרו «התקן את SOS» / Install app</span>
+          </div>
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">3</span>
+            <span>אחרי ההתקנה יופיע אייקון בשולחן העבודה ובשורת המשימות</span>
+          </div>
+        </div>
+        <p class="pwa-install-note">אם האפשרות לא מופיעה – רעננו את הדף ונסו שוב מכפתור «התקן»</p>
+        <button type="button" class="pwa-install-dialog__close">הבנתי</button>
+      </div>
+    `;
+    dialog.querySelector('.pwa-install-dialog__close').addEventListener('click', () => {
+      dialog.close?.() || (dialog.style.display = 'none');
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal?.() || (dialog.style.display = 'flex');
+  }
+
+  function showChromeInstallGuide() {
+    showDesktopInstallGuide();
+  }
+
+  // חלק התקנת PWA בדסקטופ (pwa-installer.js) – beforeinstallprompt בלבד, בלי נפילה ל־APK | HYPER CORE TECH
+  function installPwaDesktop() {
+    if (isRunningInNativeShell() || checkIfInstalled()) {
+      isInstalled = true;
+      pwaToast('הממשק כבר מותקן – פתח אותו מהאייקון');
+      ensurePushAfterInstall();
+      return { outcome: 'already_installed' };
+    }
+
+    const promptEvent = getDeferredPrompt();
+    if (promptEvent && typeof promptEvent.prompt === 'function') {
+      try {
+        promptEvent.prompt();
+        Promise.resolve(promptEvent.userChoice).then((choiceResult) => {
+          console.log('[PWA] תוצאת התקנה:', choiceResult && choiceResult.outcome);
+          deferredInstallPrompt = null;
+          window.deferredPwaPrompt = null;
+          if (choiceResult && choiceResult.outcome === 'accepted') {
+            isInstalled = true;
+            try { localStorage.setItem('pwa_installed', 'true'); } catch (_) {}
+            const banner = document.getElementById('pwa-install-banner');
+            if (banner) banner.remove();
+            pwaToast('הממשק מותקן בהצלחה');
+            ensurePushAfterInstall({ forcePermissionPrompt: true });
+          } else if (choiceResult && choiceResult.outcome === 'dismissed') {
+            pwaToast('ההתקנה בוטלה');
+          }
+        }).catch((err) => {
+          console.error('[PWA] שגיאה ב-userChoice:', err);
+        });
+        return { outcome: 'prompted' };
+      } catch (err) {
+        console.error('[PWA] שגיאה בהפעלת prompt:', err);
+        pwaToast('לא ניתן להפעיל התקנה כרגע');
+        return { outcome: 'error', error: err.message };
+      }
+    }
+
+    showDesktopInstallGuide();
+    return { outcome: 'desktop_manual' };
+  }
+
+  function installAndroidApk() {
+    if (isRunningInNativeShell()) {
+      isInstalled = true;
+      pwaToast('SOS כבר מותקן במכשיר');
+      ensurePushAfterInstall();
+      return { outcome: 'already_installed', platform: 'native' };
+    }
+    return startNativeApkInstall();
+  }
+
+  // חלק פתיחת בחירה (pwa-installer.js) – כרטיסיית PC / Android / iPhone | HYPER CORE TECH
+  function openInstallChooserOrFallback() {
+    if (isRunningInNativeShell()) {
+      isInstalled = true;
+      pwaToast('SOS כבר מותקן במכשיר');
+      ensurePushAfterInstall();
+      return { outcome: 'already_installed', platform: 'native' };
+    }
+    if (checkIfInstalled()) {
+      isInstalled = true;
+      pwaToast('הממשק כבר מותקן – פתח אותו מהאייקון');
+      ensurePushAfterInstall();
+      return { outcome: 'already_installed' };
+    }
+    if (typeof App.openInstallChooser === 'function') {
+      App.openInstallChooser();
+      return { outcome: 'chooser' };
+    }
+    // fallback אם המודול לא נטען
+    const platform = getPlatformInfo();
+    if (platform.isAndroid) return installAndroidApk();
+    if (platform.isIOS) {
+      showIOSInstallGuide();
+      return { outcome: 'ios_manual' };
+    }
+    return installPwaDesktop();
+  }
+
+  // חלק הפעלת התקנה מלחיצה (pwa-installer.js) – פותח בחירת פלטפורמה | HYPER CORE TECH
+  function runInstallFromUserGesture() {
+    return openInstallChooserOrFallback();
+  }
+
+  // חלק הפעלת התקנה (pwa-installer.js) – הפעלת דיאלוג ההתקנה | HYPER CORE TECH
+  async function promptInstall() {
+    return runInstallFromUserGesture();
+  }
+
+  // חלק UI התקנה (pwa-installer.js) – הצגת והסתרת כפתור התקנה | HYPER CORE TECH
+  function showInstallButton() {
+    const btn = document.getElementById('pwa-install-btn');
+    if (btn) {
+      btn.removeAttribute('hidden');
+      btn.style.display = '';
+    }
+    // עדכון כפתור בתפריט אם קיים
+    const menuBtn = document.getElementById('pwa-install-menu-btn');
+    if (menuBtn) {
+      menuBtn.removeAttribute('hidden');
+    }
+  }
+
+  function hideInstallButton() {
+    const btn = document.getElementById('pwa-install-btn');
+    if (btn) {
+      btn.setAttribute('hidden', '');
+      btn.style.display = 'none';
+    }
+    // ב־APK native מסתירים גם את כפתור התפריט – כבר מותקן | HYPER CORE TECH
+    if (isRunningInNativeShell()) {
+      const menuBtn = document.getElementById('pwa-install-menu-btn');
+      if (menuBtn) {
+        menuBtn.setAttribute('hidden', '');
+        menuBtn.style.display = 'none';
+      }
+    }
+  }
+
+  // חלק כפתור תפריט (pwa-installer.js) – התקנה ישירה בלי באנר תחתון | HYPER CORE TECH
+  function bindInstallMenuButton() {
+    const menuBtn = document.getElementById('pwa-install-menu-btn');
+    if (!menuBtn || menuBtn.dataset.bound === '1') return;
+    menuBtn.dataset.bound = '1';
+    menuBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const profileMenu = document.getElementById('topBarProfileMenu');
+      const profileBtn = document.getElementById('topBarProfileButton');
+      if (profileMenu) profileMenu.hidden = true;
+      if (profileBtn) profileBtn.setAttribute('aria-expanded', 'false');
+
+      const existingBanner = document.getElementById('pwa-install-banner');
+      if (existingBanner) existingBanner.remove();
+
+      openInstallChooserOrFallback();
+    });
+  }
+
+  // חלק הנחיות iOS (pwa-installer.js) – מדריך Add to Home Screen בסגנון ניאון | HYPER CORE TECH
+  function showIOSInstallGuide() {
+    const existingDialog = document.getElementById('ios-install-guide');
+    if (existingDialog) {
+      existingDialog.showModal?.() || (existingDialog.style.display = 'flex');
+      return;
+    }
+
+    const dialog = document.createElement('dialog');
+    dialog.id = 'ios-install-guide';
+    dialog.className = 'pwa-install-dialog';
+    dialog.innerHTML = `
+      <div class="pwa-install-dialog__content">
+        <img src="./icons/sos-logo-mobile.png?v=20260802aa" alt="SOS" class="pwa-install-dialog__logo" width="64" height="64">
+        <h2>התקנת SOS באייפון</h2>
+        <p class="pwa-install-dialog__lead">ב־Safari בלבד — אין התקנה אוטומטית באייפון</p>
+        <div class="pwa-install-steps">
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">1</span>
+            <span>לחצו על כפתור השיתוף <i class="fa-solid fa-arrow-up-from-bracket"></i> בתחתית המסך</span>
+          </div>
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">2</span>
+            <span>גללו ולחצו על «Add to Home Screen» / «הוסף למסך הבית»</span>
+          </div>
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">3</span>
+            <span>לחצו «Add» / «הוסף» — האייקון יופיע במסך הבית</span>
+          </div>
+        </div>
+        <p class="pwa-install-note">אחרי ההתקנה האפליקציה נפתחת במסך מלא וניתן להפעיל התראות Push</p>
+        <button type="button" class="pwa-install-dialog__close">הבנתי</button>
+      </div>
+    `;
+    dialog.querySelector('.pwa-install-dialog__close').addEventListener('click', () => {
+      dialog.close?.() || (dialog.style.display = 'none');
+    });
+    document.body.appendChild(dialog);
+    dialog.showModal?.() || (dialog.style.display = 'flex');
+  }
+
+  // חלק הנחיות Firefox (pwa-installer.js) – מדריך התקנה ל-Firefox | HYPER CORE TECH
+  function showFirefoxInstallGuide() {
+    const existingDialog = document.getElementById('firefox-install-guide');
+    if (existingDialog) {
+      existingDialog.showModal?.() || (existingDialog.style.display = 'flex');
+      return;
+    }
+    
+    const dialog = document.createElement('dialog');
+    dialog.id = 'firefox-install-guide';
+    dialog.className = 'pwa-install-dialog';
+    dialog.innerHTML = `
+      <div class="pwa-install-dialog__content">
+        <h2>🦊 התקנת SOS ב-Firefox</h2>
+        <div class="pwa-install-steps">
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">1</span>
+            <span>לחץ על שלוש הנקודות בתפריט (⋮) בפינה הימנית העליונה</span>
+          </div>
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">2</span>
+            <span>בחר "Install" או "התקן" (אם זמין)</span>
+          </div>
+          <div class="pwa-install-step">
+            <span class="pwa-install-step__number">3</span>
+            <span>אם לא זמין, הוסף לסימניות לגישה מהירה</span>
+          </div>
+        </div>
+        <button type="button" class="pwa-install-dialog__close" onclick="this.closest('dialog').close()">הבנתי</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    dialog.showModal?.() || (dialog.style.display = 'flex');
+  }
+
+  // חלק באנר התקנה (pwa-installer.js) – מובייל למעלה, נעלם לבד אחרי 5 שניות | HYPER CORE TECH
+  function createInstallBanner() {
+    // בדיקה 1: לא מציגים אם כבר מותקן (כולל APK native) | HYPER CORE TECH
+    if (isInstalled || isRunningInNativeShell() || checkIfInstalled()) {
+      console.log('[PWA] האפליקציה כבר מותקנת - לא מציגים באנר');
+      return;
+    }
+    
+    // בדיקה 2: לא מציגים אם המשתמש כבר סגר את הבאנר (ב-7 ימים האחרונים)
+    const dismissed = localStorage.getItem('pwa_banner_dismissed');
+    if (dismissed) {
+      const dismissedAt = parseInt(dismissed, 10);
+      const daysSinceDismissed = (Date.now() - dismissedAt) / (1000 * 60 * 60 * 24);
+      if (daysSinceDismissed < 7) {
+        console.log('[PWA] המשתמש סגר את הבאנר לאחרונה');
+        return;
+      }
+    }
+    
+    // בדיקה 3: לא מציגים אם המשתמש כבר התקין בעבר
+    if (localStorage.getItem('pwa_installed') === 'true') {
+      console.log('[PWA] המשתמש כבר התקין בעבר');
+      return;
+    }
+    
+    const existingBanner = document.getElementById('pwa-install-banner');
+    if (existingBanner) return;
+    
+    const banner = document.createElement('div');
+    banner.id = 'pwa-install-banner';
+    banner.className = 'pwa-install-banner';
+    banner.innerHTML = `
+      <div class="pwa-install-banner__content">
+        <img src="./icons/sos-logo-mobile.png?v=20260802ad" alt="SOS" class="pwa-install-banner__icon">
+        <div class="pwa-install-banner__text">
+          <strong>התקן את אפליקציית SOS</strong>
+          <span>התראות גם כשהמסך כבוי</span>
+        </div>
+      </div>
+      <div class="pwa-install-banner__actions">
+        <button type="button" class="pwa-install-banner__dismiss" aria-label="סגור">✕</button>
+        <button type="button" class="pwa-install-banner__install">התקן</button>
+      </div>
+    `;
+
+    function dismissInstallBanner(markDismissed) {
+      if (!banner.isConnected) return;
+      banner.classList.remove('pwa-install-banner--visible');
+      setTimeout(() => {
+        try { banner.remove(); } catch (_) {}
+      }, 350);
+      if (markDismissed) {
+        try { localStorage.setItem('pwa_banner_dismissed', Date.now().toString()); } catch (_) {}
+      }
+    }
+    
+    banner.querySelector('.pwa-install-banner__dismiss').addEventListener('click', () => {
+      dismissInstallBanner(true);
+    });
+    
+    banner.querySelector('.pwa-install-banner__install').addEventListener('click', () => {
+      const result = openInstallChooserOrFallback();
+      if (result && result.outcome === 'already_installed') {
+        dismissInstallBanner(true);
+      }
+    });
+    
+    document.body.appendChild(banner);
+    
+    // הצגה עם אנימציה + היעלמות אוטומטית אחרי 5 שניות (פחות מפריע לאורח חדש) | HYPER CORE TECH
+    setTimeout(() => banner.classList.add('pwa-install-banner--visible'), 100);
+    setTimeout(() => dismissInstallBanner(true), 5100);
+  }
+
+  // חלק אתחול (pwa-installer.js) – אתחול מערכת ה-PWA | HYPER CORE TECH
+  // חלק תיקון PWA ברקע – רישום SW תמיד כדי לאפשר Push והתרעות גם אחרי התקנה | HYPER CORE TECH
+  async function initPwa() {
+    console.log('[PWA] מאתחל מערכת PWA...');
+    
+    // **תמיד** לרשום SW - קריטי לקבלת Push והתרעות גם ב-PWA מותקנת!
+    await registerServiceWorker();
+    
+    // **תמיד** להגדיר מאזין להתקנה - גם אם נראה מותקן (יכול להיות חלון דפדפן רגיל)
+    setupInstallPromptListener();
+    bindInstallMenuButton();
+
+    // אם הדגל מגיע מאוחר מ־onPageFinished – מסירים באנר אם הופיע | HYPER CORE TECH
+    window.addEventListener('sos-native-ready', () => {
+      isInstalled = true;
+      try { localStorage.setItem('pwa_installed', 'true'); } catch (_) {}
+      const banner = document.getElementById('pwa-install-banner');
+      if (banner) banner.remove();
+      hideInstallButton();
+    });
+    
+    isInstalled = checkIfInstalled();
+    console.log('[PWA] סטטוס התקנה:', isInstalled ? 'מותקן' : 'לא מותקן',
+      isRunningInNativeShell() ? '(native shell)' : '');
+    
+    if (isInstalled) {
+      console.log('[PWA] האפליקציה מותקנת - SW רשום לקבלת Push והתרעות ברקע');
+      localStorage.setItem('pwa_installed', 'true');
+      hideInstallButton();
+      // ממשיכים לאתחל push גם אחרי התקנה (שם הפונקציה הנכון) | HYPER CORE TECH
+      ensurePushAfterInstall();
+      return;
+    }
+    
+    console.log('[PWA] מערכת PWA אותחלה - ממתין ל-beforeinstallprompt');
+    
+    // יצירת באנר התקנה - עם השהייה לתת beforeinstallprompt זמן להגיע
+    scheduleInstallBanner();
+  }
+
+  // חלק תזמון באנר (pwa-installer.js) – הצגת באנר התקנה בתזמון נכון | HYPER CORE TECH
+  function scheduleInstallBanner() {
+    // APK / כבר מותקן – בלי באנר התקנה | HYPER CORE TECH
+    if (isInstalled || isRunningInNativeShell() || checkIfInstalled()) {
+      return;
+    }
+
+    const platform = getPlatformInfo();
+    
+    // iOS - מציגים באנר מיד (אין beforeinstallprompt)
+    if (platform.isIOS) {
+      setTimeout(() => {
+        if (!isInstalled && !checkIfInstalled()) {
+          createInstallBanner();
+        }
+      }, 5000);
+      return;
+    }
+    
+    // Android/Desktop - ממתינים ל-beforeinstallprompt
+    let bannerTimeout = setTimeout(() => {
+      if (isRunningInNativeShell() || checkIfInstalled()) return;
+      if (!getDeferredPrompt()) {
+        // Android בדפדפן: באנר מוביל לבחירה (APK) גם בלי beforeinstallprompt | HYPER CORE TECH
+        console.log('[PWA] beforeinstallprompt לא התקבל עדיין');
+        if (platform.isFirefox || platform.isAndroid) {
+          createInstallBanner();
+        }
+      }
+    }, 8000);
+    
+    // אם beforeinstallprompt מגיע לפני הטיימאוט, מציגים באנר
+    window.addEventListener('beforeinstallprompt', () => {
+      if (isRunningInNativeShell() || checkIfInstalled()) return;
+      clearTimeout(bannerTimeout);
+      setTimeout(createInstallBanner, 3000);
+    }, { once: true });
+  }
+
+  // חלק עדכון גרסה (pwa-installer.js) – הצגת הודעה כשיש גרסה חדשה | HYPER CORE TECH
+  const APP_VERSION_KEY = 'sos_app_version';
+  const APP_VERSION_URL = './app-version.json';
+  const UPDATE_LATER_KEY = 'pwa_update_later';
+  let pendingRemoteAppVersion = null;
+  let pendingApkRelease = null;
+  let webUpdateToastQueued = false;
+
+  function readSessionFlag(key) {
+    try { return sessionStorage.getItem(key) || ''; } catch (_) { return ''; }
+  }
+
+  function writeSessionFlag(key, value) {
+    try { sessionStorage.setItem(key, value); } catch (_) {}
+  }
+
+  function clearSessionFlag(key) {
+    try { sessionStorage.removeItem(key); } catch (_) {}
+  }
+
+  function readStoredAppVersion() {
+    try { return localStorage.getItem(APP_VERSION_KEY) || ''; } catch (_) { return ''; }
+  }
+
+  function writeStoredAppVersion(version) {
+    const v = String(version || '').trim();
+    if (!v) return;
+    try { localStorage.setItem(APP_VERSION_KEY, v); } catch (_) {}
+  }
+
+  async function fetchRemoteAppVersion() {
+    const res = await fetch(`${APP_VERSION_URL}?_=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return '';
+    const data = await res.json();
+    return String(data?.version || '').trim();
+  }
+
+  function shouldSuppressWebUpdateToast(remoteHint) {
+    const remote = String(remoteHint || pendingRemoteAppVersion || '').trim();
+    const local = readStoredAppVersion();
+    if (remote && local && local === remote) return true;
+    const later = readSessionFlag(UPDATE_LATER_KEY);
+    if (!later) return false;
+    if (later === '*' || later === 'sw') {
+      if (remote) writeSessionFlag(UPDATE_LATER_KEY, remote);
+      return true;
+    }
+    return !!(remote && later === remote);
+  }
+
+  function queueOrShowWebUpdateToast() {
+    if (shouldSuppressWebUpdateToast(pendingRemoteAppVersion)) return;
+    if (document.getElementById('apk-update-toast')) {
+      webUpdateToastQueued = true;
+      return;
+    }
+    showUpdateAvailableToast();
+  }
+
+  function flushQueuedWebUpdateToast() {
+    if (!webUpdateToastQueued) return;
+    webUpdateToastQueued = false;
+    showUpdateAvailableToast();
+  }
+
+  /** לפני ריענון עדכון: סוגר שיחות, מנקה ?chat=, נשאר בפיד | HYPER CORE TECH */
+  function prepareCleanReloadAfterUiUpdate() {
+    try {
+      const App = window.NostrApp;
+      if (typeof App?.closeChatPanel === 'function') App.closeChatPanel();
+      else {
+        document.getElementById('chatPanel')?.setAttribute('hidden', '');
+        document.body.classList.remove('chat-overlay-open');
+      }
+      if (typeof App?.clearSosDeepLinkFlags === 'function') {
+        App.clearSosDeepLinkFlags();
+      }
+    } catch (_) {}
+
+    let nextUrl = window.location.pathname + (window.location.hash || '');
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('chat');
+      url.searchParams.delete('incomingCall');
+      const q = url.searchParams.toString();
+      nextUrl = url.pathname + (q ? `?${q}` : '') + url.hash;
+    } catch (_) {}
+
+    setTimeout(() => {
+      try {
+        const cur = window.location.pathname + window.location.search + window.location.hash;
+        if (cur !== nextUrl) window.location.replace(nextUrl);
+        else window.location.reload();
+      } catch (_) {
+        window.location.reload();
+      }
+    }, 400);
+  }
+
+  function showUpdateAvailableToast() {
+    if (document.getElementById('pwa-update-toast')) return;
+    // במעטפת: קודם APK, אחר כך ווב – לא שתי הודעות יחד | HYPER CORE TECH
+    if (document.getElementById('apk-update-toast')) {
+      webUpdateToastQueued = true;
+      return;
+    }
+    if (shouldSuppressWebUpdateToast(pendingRemoteAppVersion)) return;
+    if (!document.body) {
+      document.addEventListener('DOMContentLoaded', () => showUpdateAvailableToast(), { once: true });
+      return;
+    }
+
+    const toast = document.createElement('div');
+    toast.id = 'pwa-update-toast';
+    toast.className = 'pwa-update-toast';
+    toast.innerHTML = `
+      <img src="./icons/sos-logo-mobile.png?v=20260802ac" alt="SOS" class="pwa-update-toast__logo">
+      <div class="pwa-update-toast__content">
+        <span class="pwa-update-toast__title">גרסה חדשה זמינה!</span>
+        <span class="pwa-update-toast__subtitle">עדכן כדי ליהנות משיפורים ותכונות חדשות</span>
+      </div>
+      <div class="pwa-update-toast__actions">
+        <button type="button" class="pwa-update-toast__later">אח״כ</button>
+        <button type="button" class="pwa-update-toast__now">עדכן</button>
+      </div>
+    `;
+
+    toast.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+    
+    toast.querySelector('.pwa-update-toast__later').onclick = (e) => {
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+      writeSessionFlag(UPDATE_LATER_KEY, pendingRemoteAppVersion || readStoredAppVersion() || 'sw');
+      toast.classList.remove('pwa-update-toast--visible');
+      setTimeout(() => toast.remove(), 300);
+    };
+    
+    toast.querySelector('.pwa-update-toast__now').onclick = async (e) => {
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+      clearSessionFlag(UPDATE_LATER_KEY);
+      try { sessionStorage.removeItem('pwa_just_updated'); } catch (_) {}
+      let version = pendingRemoteAppVersion;
+      try {
+        const fetched = await fetchRemoteAppVersion();
+        if (fetched) version = fetched;
+      } catch (_) {}
+      if (version) {
+        writeStoredAppVersion(version);
+        pendingRemoteAppVersion = version;
+      }
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg?.waiting) {
+          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        }
+      } catch (_) {}
+      prepareCleanReloadAfterUiUpdate();
+    };
+    
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.classList.add('pwa-update-toast--visible'); }, 100);
+    console.log('[PWA] הוצגה הודעת עדכון גרסה');
+  }
+
+  function getInstalledShellVersion() {
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.getShellVersion === 'function') {
+        return String(bridge.getShellVersion() || '').trim();
+      }
+    } catch (_) {}
+    const m = String(navigator.userAgent || '').match(/SOSNativeShell\/([0-9.]+)/i);
+    return m ? m[1] : '';
+  }
+
+  function getInstalledShellVersionCode() {
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.getShellVersionCode === 'function') {
+        const n = Number(bridge.getShellVersionCode());
+        return Number.isFinite(n) ? n : 0;
+      }
+    } catch (_) {}
+    return 0;
+  }
+
+  function compareSemver(a, b) {
+    const pa = String(a || '').split('.').map((x) => parseInt(x, 10) || 0);
+    const pb = String(b || '').split('.').map((x) => parseInt(x, 10) || 0);
+    const len = Math.max(pa.length, pb.length, 3);
+    for (let i = 0; i < len; i += 1) {
+      const av = pa[i] || 0;
+      const bv = pb[i] || 0;
+      if (av > bv) return 1;
+      if (av < bv) return -1;
+    }
+    return 0;
+  }
+
+  function showApkUpdateAvailableToast(release) {
+    if (!isRunningInNativeShell()) return;
+    if (document.getElementById('apk-update-toast')) return;
+    try {
+      if (sessionStorage.getItem('apk_update_dismissed') === String(release?.version || '')) return;
+    } catch (_) {}
+
+    pendingApkRelease = release || pendingApkRelease;
+    const remoteVer = String(pendingApkRelease?.version || NATIVE_APK_VERSION);
+
+    // אם כבר מוצג עדכון ווב – מסירים וממתינים בתור אחרי ה-APK | HYPER CORE TECH
+    const webToast = document.getElementById('pwa-update-toast');
+    if (webToast) {
+      webUpdateToastQueued = true;
+      try { webToast.remove(); } catch (_) {}
+    }
+
+    const toast = document.createElement('div');
+    toast.id = 'apk-update-toast';
+    toast.className = 'pwa-update-toast apk-update-toast';
+    toast.innerHTML = `
+      <img src="./icons/sos-logo-mobile.png?v=20260802ac" alt="SOS" class="pwa-update-toast__logo">
+      <div class="pwa-update-toast__content">
+        <span class="pwa-update-toast__title">עדכון אפליקציה זמין</span>
+        <span class="pwa-update-toast__subtitle">גרסה ${remoteVer}. אם כתוב שהחבילה מתנגשת — הסירו את SOS ואז התקינו שוב.</span>
+      </div>
+      <div class="pwa-update-toast__actions">
+        <button type="button" class="pwa-update-toast__later">אח״כ</button>
+        <button type="button" class="pwa-update-toast__now">עדכן אפליקציה</button>
+      </div>
+    `;
+
+    const finishApkToast = () => {
+      toast.classList.remove('pwa-update-toast--visible');
+      setTimeout(() => {
+        try { toast.remove(); } catch (_) {}
+        flushQueuedWebUpdateToast();
+      }, 300);
+    };
+
+    toast.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    toast.querySelector('.pwa-update-toast__later').onclick = (e) => {
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+      try { sessionStorage.setItem('apk_update_dismissed', remoteVer); } catch (_) {}
+      finishApkToast();
+    };
+
+    toast.querySelector('.pwa-update-toast__now').onclick = (e) => {
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+      // Exact remote release URL only — NEVER fall back to PUBLIC STABLE NATIVE_APK_URL.
+      const url = String(pendingApkRelease?.url || '').trim();
+      const file = String(pendingApkRelease?.file || '').trim();
+      const ver = String(pendingApkRelease?.version || '').trim();
+      if (!url || !file || !ver) {
+        console.warn('[PWA] APK_UPDATE_METADATA_INVALID');
+        pwaToast('עדכון האפליקציה אינו זמין כרגע');
+        finishApkToast();
+        return;
+      }
+      const check = validateApkUpdateRelease({
+        published: true,
+        version: ver,
+        versionCode: Number(pendingApkRelease?.versionCode) || 0,
+        file,
+        url,
+      });
+      if (!check.ok) {
+        console.warn('[PWA] APK_UPDATE_METADATA_INVALID', check.reason);
+        pwaToast('עדכון האפליקציה אינו זמין כרגע');
+        finishApkToast();
+        return;
+      }
+      const bridge = window.SosNativeShell;
+      try {
+        if (bridge && typeof bridge.installApkUpdate === 'function') {
+          bridge.installApkUpdate(url);
+          pwaToast('מוריד את עדכון האפליקציה…');
+          finishApkToast();
+          return;
+        }
+      } catch (_) {}
+      try {
+        pwaToast('מוריד את עדכון האפליקציה…');
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', file);
+        link.rel = 'noopener';
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(() => link.remove(), 1000);
+      } catch (err) {
+        console.error('[PWA] APK update download failed', err);
+        window.location.href = url;
+      }
+      finishApkToast();
+    };
+
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.classList.add('pwa-update-toast--visible'); }, 120);
+    console.log('[PWA] הוצגה הודעת עדכון APK', remoteVer);
+  }
+
+  async function checkApkReleaseVersion() {
+    if (!isRunningInNativeShell()) return;
+    try {
+      const res = await fetch(`${APK_VERSION_URL}?_=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const validated = validateApkUpdateRelease(data);
+      if (!validated.ok) {
+        if (validated.reason === 'unpublished') {
+          console.log('[PWA] APK release unpublished/qa — no update toast');
+          return;
+        }
+        console.warn('[PWA] APK_UPDATE_METADATA_INVALID', validated.reason);
+        return;
+      }
+      const release = validated.release;
+      const remoteVersion = release.version;
+      const remoteCode = release.versionCode;
+
+      const localVersion = getInstalledShellVersion();
+      const localCode = getInstalledShellVersionCode();
+      let needsUpdate = false;
+      if (remoteCode > 0 && localCode > 0) {
+        needsUpdate = remoteCode > localCode;
+      } else if (remoteVersion && localVersion) {
+        needsUpdate = compareSemver(remoteVersion, localVersion) > 0;
+      }
+      if (!needsUpdate) return;
+
+      pendingApkRelease = release;
+      console.log('[PWA] עדכון APK זמין', { localVersion, localCode, remoteVersion, remoteCode });
+      showApkUpdateAvailableToast(pendingApkRelease);
+    } catch (err) {
+      console.warn('[PWA] בדיקת apk-version נכשלה:', err);
+    }
+  }
+
+  // חלק עדכון גרסה (pwa-installer.js) – בדיקת app-version.json לזיהוי דיפלוי גם בלי שינוי SW | HYPER CORE TECH
+  async function checkAppReleaseVersion() {
+    try {
+      const remote = await fetchRemoteAppVersion();
+      if (!remote) return;
+      let local = readStoredAppVersion();
+      if (!local) {
+        writeStoredAppVersion(remote);
+        return;
+      }
+      if (local === remote) {
+        pendingRemoteAppVersion = null;
+        clearSessionFlag(UPDATE_LATER_KEY);
+        try { sessionStorage.removeItem('pwa_just_updated'); } catch (_) {}
+        return;
+      }
+      pendingRemoteAppVersion = remote;
+      console.log('[PWA] גרסת app-version חדשה', { local, remote });
+      queueOrShowWebUpdateToast();
+    } catch (err) {
+      console.warn('[PWA] בדיקת app-version נכשלה:', err);
+    }
+  }
+
+  // חלק עדכון גרסה (pwa-installer.js) – בדיקת עדכונים תקופתית | HYPER CORE TECH
+  function setupUpdateChecker() {
+    try {
+      sessionStorage.removeItem('pwa_just_updated');
+      const later = sessionStorage.getItem('pwa_update_later');
+      if (later === '*') sessionStorage.removeItem('pwa_update_later');
+    } catch (_) {}
+    if (!navigator.serviceWorker) {
+      setTimeout(checkApkReleaseVersion, 2500);
+      setInterval(checkApkReleaseVersion, 5 * 60 * 1000);
+      setTimeout(checkAppReleaseVersion, 4000);
+      setInterval(checkAppReleaseVersion, 60 * 1000);
+      return;
+    }
+
+    async function checkForUpdates() {
+      try {
+        await checkApkReleaseVersion();
+        await checkAppReleaseVersion();
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) {
+          await reg.update();
+        }
+      } catch (err) {
+        console.warn('[PWA] שגיאה בבדיקת עדכונים:', err);
+      }
+    }
+
+    setTimeout(checkForUpdates, 3000);
+    setInterval(checkForUpdates, 60 * 1000);
+
+    // אחרי SKIP_WAITING ה-SW כבר הוחלף — לא להציג כרטיס שוב | HYPER CORE TECH
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      console.log('[PWA] Service Worker הוחלף');
+    });
+
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type === 'app-update-available') {
+        if (event.data.version) pendingRemoteAppVersion = String(event.data.version);
+        queueOrShowWebUpdateToast();
+        return;
+      }
+      if (event.data?.type === 'NEW_VERSION_ACTIVATED') {
+        console.log('[PWA] גרסה חדשה הופעלה (בלי כרטיס חוזר)');
+      }
+    });
+  }
+
+  // חשיפת API ציבורי
+  // Expose prepareCleanReload for secure-epoch forced reload (optional hook).
+  Object.assign(App, {
+    getPlatformInfo,
+    checkIfInstalled,
+    isRunningInNativeShell,
+    promptPwaInstall: promptInstall,
+    installPwaDesktop,
+    installAndroidApk,
+    showIOSInstallGuide,
+    showDesktopInstallGuide,
+    showChromeInstallGuide,
+    showInstallBanner: createInstallBanner,
+    isPwaInstalled: () => isInstalled || checkIfInstalled(),
+    showUpdateAvailableToast,
+    showApkUpdateAvailableToast,
+    checkApkReleaseVersion,
+    validateApkUpdateRelease,
+    isApkReleasePublished,
+    ensurePushAfterInstall,
+    prepareCleanReloadAfterUiUpdate,
+    SOS_APK_VERSION: NATIVE_APK_VERSION,
+    SOS_APK_FILE: NATIVE_APK_FILE,
+    SOS_APK_URL: NATIVE_APK_URL,
+  });
+  
+  // פונקציה גלובלית להפעלת התקנה – פותחת בחירת פלטפורמה | HYPER CORE TECH
+  window.requestPwaInstallPrompt = promptInstall;
+  setupUpdateChecker();
+
+  // אתחול כשהדף מוכן
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initPwa);
+  } else {
+    initPwa();
+  }
+})(window);

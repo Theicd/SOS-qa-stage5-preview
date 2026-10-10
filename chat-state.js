@@ -1,0 +1,1863 @@
+(function initChatState(window) {
+  const App = window.NostrApp || (window.NostrApp = {});
+
+  // חלק צ'אט (chat-state.js) – מבנה נתונים מרכזי לצ'אט
+  App.deletedChatMessageIds = App.deletedChatMessageIds || new Set();
+  const CHAT_PERSIST_MODULE = '20260905p1';
+  App.CHAT_PERSIST_MODULE = CHAT_PERSIST_MODULE;
+  try { console.log('[CHAT/PERSIST] MODULE chat-state.js v=' + CHAT_PERSIST_MODULE); } catch (_) {}
+
+  const chatState = {
+    contacts: new Map(),
+    conversations: new Map(),
+    unreadTotal: 0,
+    listeners: {
+      contacts: new Set(),
+      message: new Set(),
+      unread: new Set(),
+    },
+    messageIndex: new Map(), // חלק צ'אט (chat-state.js) – שומר מפה מהירה מהודעה לשיחה לצורך מחיקה וניקוי כפילויות
+    lastSyncTs: 0, // חלק צ'אט (chat-state.js) – חותמת סנכרון אחרונה כדי לצמצם משיכה מריליי | HYPER CORE TECH
+    pendingReadReceipts: new Map(),
+    readWatermarks: new Map(),
+    seenReceiptIds: [],
+    pendingInboundReceipts: new Map(),
+  };
+
+  const MESSAGE_STATUS_RANK = {
+    failed: 0,
+    queued: 1,
+    sending: 1,
+    sent: 2,
+    delivered: 2,
+    read: 3,
+  };
+
+  const MAX_MESSAGES_PER_THREAD = 500; // חלק צ'אט (chat-state.js) – מגביל היסטוריה בזיכרון/שמירה לביצועים | HYPER CORE TECH
+  const CHAT_RETENTION_SECONDS = 90 * 24 * 60 * 60; // חלק צ'אט (chat-state.js) – תקרת שמירה גלובלית 90 יום | HYPER CORE TECH
+  const DISAPPEARING_DEFAULT_SEC = 7 * 24 * 60 * 60; // חלק ניקוי אוטומטי – ברירת מחדל 7 ימים | HYPER CORE TECH
+
+  // peerPubkey -> seconds (0 = כבוי; אחרת עד 90 יום) | HYPER CORE TECH
+  chatState.disappearingTimers = new Map();
+  chatState.defaultDisappearingSec = DISAPPEARING_DEFAULT_SEC;
+
+  function getChatRetentionCutoffTs(nowSec = Math.floor(Date.now() / 1000)) {
+    return nowSec - CHAT_RETENTION_SECONDS;
+  }
+
+  function getMessageCreatedAt(message) {
+    const ts = Number(message?.createdAt || message?.created_at || 0);
+    return Number.isFinite(ts) ? ts : 0;
+  }
+
+  function normalizeDisappearingTimerSec(seconds) {
+    const sec = Number(seconds);
+    if (!Number.isFinite(sec) || sec < 0) {
+      return DISAPPEARING_DEFAULT_SEC;
+    }
+    // 0 = כבוי (בלי ניקוי אוטומטי לפי טיימר) | HYPER CORE TECH
+    if (sec === 0) return 0;
+    return Math.min(sec, CHAT_RETENTION_SECONDS);
+  }
+
+  function getDisappearingTimerSec(peerPubkey) {
+    const key = typeof peerPubkey === 'string' ? peerPubkey.toLowerCase() : '';
+    if (!key) return chatState.defaultDisappearingSec;
+    if (chatState.disappearingTimers.has(key)) {
+      return normalizeDisappearingTimerSec(chatState.disappearingTimers.get(key));
+    }
+    return chatState.defaultDisappearingSec;
+  }
+
+  function formatDisappearingTimerLabel(seconds) {
+    const sec = normalizeDisappearingTimerSec(seconds);
+    if (sec === 0) return 'כבוי';
+    const day = 24 * 60 * 60;
+    if (sec <= day) return '24 שעות';
+    if (sec <= 3 * day) return '72 שעות';
+    if (sec <= 7 * day) return '7 ימים';
+    if (sec <= 14 * day) return '14 יום';
+    if (sec <= 30 * day) return '30 יום';
+    if (sec <= 60 * day) return '60 יום';
+    if (sec <= 90 * day) return '90 ימים';
+    return `${Math.round(sec / day)} ימים`;
+  }
+
+  function isSystemChatMessage(message) {
+    return !!(message && (message.isSystem || message.direction === 'system' || message.systemKind));
+  }
+
+  function buildDisappearingNoticeContent(sec, kind = 'intro') {
+    const normalized = normalizeDisappearingTimerSec(sec);
+    if (normalized === 0) {
+      if (kind === 'change') {
+        return 'ניקוי אוטומטי של הודעות השיחה כובה. הודעות לא יימחקו אוטומטית לפי טיימר. לשינוי הטיימר לחצו כאן.';
+      }
+      return 'ניקוי אוטומטי של הודעות השיחה כבוי. הודעות לא יימחקו אוטומטית לפי טיימר. לשינוי הטיימר לחצו כאן.';
+    }
+    const label = formatDisappearingTimerLabel(normalized);
+    if (kind === 'change') {
+      return `ניקוי אוטומטי של הודעות השיחה עודכן. הודעות חדשות יימחקו מהצ׳אט אחרי ${label}. לשינוי הטיימר לחצו כאן.`;
+    }
+    return `ברירת המחדל לניקוי אוטומטי של הודעות השיחה פעיל. הודעות חדשות יימחקו מהצ׳אט אחרי ${label}. לשינוי הטיימר לחצו כאן.`;
+  }
+
+  function isOutdatedDisappearingNoticeContent(content) {
+    const text = String(content || '');
+    return (
+      text.includes('הודעות נעלמות')
+      || text.includes('בחרת להשתמש')
+      || text.includes('ייעלמו מהצ')
+      || text.includes('כיבית הודעות')
+      || text.includes('ניקוי אוטומטי של הודעות השיחה מופעל')
+      || text.includes('לחץ כאן')
+      || (text.includes('ניקוי אוטומטי') && !text.includes('ברירת המחדל לניקוי אוטומטי') && text.includes('מופעל'))
+    );
+  }
+
+  function refreshDisappearingSystemNotices() {
+    let changed = 0;
+    chatState.conversations.forEach((entry) => {
+      if (!entry?.peer || !Array.isArray(entry.messages)) return;
+      entry.messages.forEach((message) => {
+        const isDisappearNotice =
+          message?.systemKind === 'disappearing-intro'
+          || message?.systemKind === 'disappearing-change'
+          || isOutdatedDisappearingNoticeContent(message?.content);
+        if (!isDisappearNotice) return;
+        const kind = message.systemKind === 'disappearing-change' ? 'change' : 'intro';
+        const sec = normalizeDisappearingTimerSec(
+          message.disappearingTimerSec || getDisappearingTimerSec(entry.peer)
+        );
+        const next = buildDisappearingNoticeContent(sec, kind);
+        if (message.content === next && message.isSystem && message.direction === 'system') return;
+        message.content = next;
+        message.disappearingTimerSec = sec;
+        message.isSystem = true;
+        message.direction = 'system';
+        if (!message.systemKind) {
+          message.systemKind = kind === 'change' ? 'disappearing-change' : 'disappearing-intro';
+        }
+        changed += 1;
+      });
+    });
+    if (changed > 0) persistState();
+    return changed;
+  }
+
+  function ensureConversationEntry(peerPubkey) {
+    const peer = typeof peerPubkey === 'string' ? peerPubkey.toLowerCase() : '';
+    const self = (App.publicKey || '').toLowerCase();
+    if (!peer || !self) return null;
+    const key = getConversationKey(peer, self);
+    if (!key) return null;
+    let entry = chatState.conversations.get(key);
+    if (!entry) {
+      entry = { peer, messages: [] };
+      chatState.conversations.set(key, entry);
+      ensureContact(peer);
+    }
+    return { key, entry, peer };
+  }
+
+  function appendDisappearingSystemNotice(peerPubkey, { kind = 'intro', silent = false } = {}) {
+    const bucket = ensureConversationEntry(peerPubkey);
+    if (!bucket) return null;
+    const { key, entry, peer } = bucket;
+    const sec = getDisappearingTimerSec(peer);
+    const now = Math.floor(Date.now() / 1000);
+    let createdAt = now;
+    if (kind === 'intro') {
+      const firstRegular = entry.messages.find((message) => !isSystemChatMessage(message));
+      const firstTs = firstRegular ? getMessageCreatedAt(firstRegular) : 0;
+      createdAt = firstTs > 0 ? Math.max(1, firstTs - 1) : now;
+    }
+    const noticeKind = kind === 'change' ? 'change' : 'intro';
+    const message = {
+      id: `sys-disappear-${noticeKind}-${peer.slice(0, 12)}-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      from: (App.publicKey || '').toLowerCase(),
+      to: peer,
+      content: buildDisappearingNoticeContent(sec, noticeKind),
+      createdAt,
+      direction: 'system',
+      isSystem: true,
+      systemKind: noticeKind === 'change' ? 'disappearing-change' : 'disappearing-intro',
+      disappearingTimerSec: sec,
+    };
+    if (kind === 'intro') {
+      entry.messages.unshift(message);
+    } else {
+      entry.messages.push(message);
+    }
+    entry.messages.sort((a, b) => getMessageCreatedAt(a) - getMessageCreatedAt(b));
+    chatState.messageIndex.set(message.id, { peer, key });
+    updateContactMeta(peer, {
+      lastMessage: '⏱ ניקוי אוטומטי',
+      timestamp: createdAt,
+      incrementUnread: false,
+    });
+    persistState();
+    if (!silent) {
+      notify('message', {
+        peer,
+        message,
+        disappearingSystemNotice: true,
+        disappearingTimerUpdated: kind === 'change',
+        disappearingTimerSec: sec,
+      });
+    }
+    return message;
+  }
+
+  function ensureDisappearingIntroNotice(peerPubkey) {
+    try { refreshDisappearingSystemNotices(); } catch (_) {}
+    const bucket = ensureConversationEntry(peerPubkey);
+    if (!bucket) return null;
+    const { entry, peer } = bucket;
+    const hasRegular = entry.messages.some((message) => !isSystemChatMessage(message));
+    if (hasRegular) return null;
+    const hasDisappearingNotice = entry.messages.some((message) =>
+      message?.systemKind === 'disappearing-intro' || message?.systemKind === 'disappearing-change'
+    );
+    if (hasDisappearingNotice) return null;
+    return appendDisappearingSystemNotice(peer, { kind: 'intro', silent: true });
+  }
+
+  function getCutoffForPeer(peerPubkey, nowSec = Math.floor(Date.now() / 1000)) {
+    return nowSec - getDisappearingTimerSec(peerPubkey);
+  }
+
+  function pruneConversationEntry(entry, cutoffTs) {
+    if (!entry || !Array.isArray(entry.messages) || !entry.messages.length) return 0;
+    const before = entry.messages.length;
+    entry.messages = entry.messages.filter((message) => {
+      const ts = getMessageCreatedAt(message);
+      if (ts && ts < cutoffTs) {
+        if (message?.id) chatState.messageIndex.delete(message.id);
+        return false;
+      }
+      return true;
+    });
+    return before - entry.messages.length;
+  }
+
+  function prunePeerDisappearingMessages(peerPubkey) {
+    const self = (App.publicKey || '').toLowerCase();
+    const peer = typeof peerPubkey === 'string' ? peerPubkey.toLowerCase() : '';
+    if (!peer || !self) return 0;
+    if (getDisappearingTimerSec(peer) === 0) return 0;
+    const key = getConversationKey(peer, self);
+    const entry = key ? chatState.conversations.get(key) : null;
+    if (!entry) return 0;
+    const removed = pruneConversationEntry(entry, getCutoffForPeer(peer));
+    if (removed > 0) {
+      persistState();
+      notify('message', { peer, disappearingPruned: true });
+    }
+    return removed;
+  }
+
+  function setDisappearingTimerSec(peerPubkey, seconds) {
+    const peer = typeof peerPubkey === 'string' ? peerPubkey.toLowerCase() : '';
+    if (!peer) return false;
+    const sec = normalizeDisappearingTimerSec(seconds);
+    chatState.disappearingTimers.set(peer, sec);
+    persistState();
+    prunePeerDisappearingMessages(peer);
+    appendDisappearingSystemNotice(peer, { kind: 'change' });
+    return true;
+  }
+
+  function pruneExpiredChatHistory() {
+    let removed = 0;
+    chatState.conversations.forEach((entry) => {
+      if (!entry?.peer) return;
+      if (getDisappearingTimerSec(entry.peer) === 0) return;
+      removed += pruneConversationEntry(entry, getCutoffForPeer(entry.peer));
+    });
+    if (removed > 0) {
+      persistState();
+      console.log('[CHAT/STATE] Pruned disappearing/expired messages:', removed);
+    }
+    return removed;
+  }
+  
+  // חלק IndexedDB (chat-state.js) – אחסון ללא הגבלה עם IndexedDB | HYPER CORE TECH
+  const DB_NAME = 'NostrChatDB';
+  const DB_VERSION = 1;
+  const STORE_NAME = 'chatState';
+  let dbInstance = null;
+  let dbReady = false;
+  let pendingPersist = false;
+  
+  function openDatabase() {
+    return new Promise((resolve, reject) => {
+      if (dbInstance && dbReady) {
+        resolve(dbInstance);
+        return;
+      }
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onerror = () => {
+        console.warn('IndexedDB open failed, falling back to localStorage');
+        reject(request.error);
+      };
+      request.onsuccess = () => {
+        dbInstance = request.result;
+        dbReady = true;
+        resolve(dbInstance);
+      };
+      request.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+        }
+      };
+    });
+  }
+
+  function getConversationKey(a, b) {
+    if (!a || !b) return null;
+    const left = a.toLowerCase();
+    const right = b.toLowerCase();
+    return left < right ? `${left}:${right}` : `${right}:${left}`;
+  }
+
+  function inferMessageTransport(message) {
+    if (!message) return 'LOCAL';
+    const explicit = String(message.transport || '').toUpperCase();
+    const source = String(message.source || '').toUpperCase();
+    const id = String(message.id || '');
+    const att = message.attachment && typeof message.attachment === 'object' ? message.attachment : null;
+    const blossomRelay = !!(
+      att
+      && att.type === 'encrypted-media'
+      && att.resource
+      && String(att.resource.transport || '').toLowerCase() === 'blossom'
+    );
+
+    // Strong persisted authorities first — never let legacy p2p flags override Relay/Blossom.
+    if (explicit === 'NOSTR' || explicit === 'MESH' || explicit === 'LOCAL') return explicit;
+    if (source === 'NOSTR') return 'NOSTR';
+    if (blossomRelay && explicit !== 'DC') return 'NOSTR';
+
+    if (explicit === 'DC') return 'DC';
+    if (source === 'DC' || source === 'P2P') return 'DC';
+
+    // Ambiguous historical: prefer no false P2P lamp.
+    if (blossomRelay) return 'NOSTR';
+    if (message.emergency || id.startsWith('em-')) return 'MESH';
+    if (id.startsWith('temp-')) return 'LOCAL';
+    if (message.p2p === true && id.startsWith('p2p-') && !blossomRelay) return 'DC';
+    if (id.startsWith('p2p-') && !blossomRelay && !source) return 'DC';
+    if (source) return source;
+    return 'NOSTR';
+  }
+
+  function getChatMessageTransport(message) {
+    return inferMessageTransport(message);
+  }
+
+  function stampMessageTransport(message) {
+    if (!message || typeof message !== 'object') return message;
+    if (!message.transport) {
+      const t = inferMessageTransport(message);
+      if (t === 'DC' || t === 'MESH' || t === 'NOSTR') message.transport = t;
+    }
+    return message;
+  }
+
+  function persistLog(event, extra) {
+    try {
+      console.log('[CHAT/PERSIST] ' + event + (extra ? ' ' + extra : ''));
+    } catch (_) {}
+  }
+
+  function countStoredMessages() {
+    let total = 0;
+    chatState.conversations.forEach((info) => {
+      total += Array.isArray(info?.messages) ? info.messages.length : 0;
+    });
+    return total;
+  }
+
+  function getStorageKey() {
+    const pubkey = typeof App.publicKey === 'string' ? App.publicKey.toLowerCase() : '';
+    if (!pubkey) return null;
+    return `nostr_chat_${pubkey}`;
+  }
+
+  /** Stage 5E-D: detach in-memory chat/runtime for logout or account switch. */
+  function clearChatRuntimeIdentity() {
+    try {
+      chatState.contacts.clear();
+      chatState.conversations.clear();
+      chatState.messageIndex.clear();
+      chatState.pendingReadReceipts.clear();
+      chatState.readWatermarks.clear();
+      chatState.pendingInboundReceipts.clear();
+      chatState.seenReceiptIds = [];
+      chatState.unreadTotal = 0;
+      chatState.lastSyncTs = 0;
+      if (chatState.disappearingTimers) chatState.disappearingTimers.clear();
+      restoredStorageKey = null;
+      restoreInFlight = null;
+      restoreInFlightStorageKey = null;
+      try { notify('contacts', []); } catch (_) {}
+      try { notify('unread', 0); } catch (_) {}
+    } catch (err) {
+      console.warn('[CHAT] clearChatRuntimeIdentity failed', err);
+    }
+  }
+
+  function notify(type, payload) {
+    const bucket = chatState.listeners[type];
+    if (!bucket) return;
+    bucket.forEach((listener) => {
+      try {
+        listener(payload);
+      } catch (err) {
+        console.warn('Chat listener callback failed', err);
+      }
+    });
+  }
+
+  // חלק אופטימיזציה (chat-state.js) – debounce ל-notify contacts למניעת ספאם | HYPER CORE TECH
+  let _notifyContactsTimeout = null;
+  function debouncedNotifyContacts() {
+    if (_notifyContactsTimeout) return;
+    _notifyContactsTimeout = setTimeout(() => {
+      _notifyContactsTimeout = null;
+      notify('contacts', getContactsSnapshot());
+    }, 300);
+  }
+
+  // חלק שמירה IndexedDB (chat-state.js) – שמירה ל-IndexedDB עם fallback ל-localStorage | HYPER CORE TECH
+  async function persistStateToIndexedDB() {
+    const storageKey = getStorageKey();
+    if (!storageKey) return;
+    
+    const contactsArray = [];
+    chatState.contacts.forEach((contact) => {
+      contactsArray.push({
+        pubkey: contact.pubkey,
+        name: contact.name,
+        picture: contact.picture,
+        initials: contact.initials,
+        lastMessage: contact.lastMessage,
+        lastTimestamp: contact.lastTimestamp,
+        unreadCount: contact.unreadCount,
+        lastReadTimestamp: contact.lastReadTimestamp || 0,
+        lastReadMessageId: contact.lastReadMessageId || '',
+        profileFetchedAt: contact.profileFetchedAt || 0,
+        archived: !!contact.archived,
+        emergencyMesh: !!contact.emergencyMesh,
+        meshReachable: !!contact.meshReachable,
+        meshRelation: contact.meshRelation || '',
+      });
+    });
+    const conversationsArray = [];
+    chatState.conversations.forEach((info, key) => {
+      conversationsArray.push({
+        key,
+        peer: info.peer,
+        messages: Array.isArray(info.messages) ? info.messages : [],
+      });
+    });
+    const disappearingTimers = [];
+    chatState.disappearingTimers.forEach((seconds, peer) => {
+      disappearingTimers.push({ peer, seconds: Number(seconds) || 0 });
+    });
+    const pendingReadReceipts = [];
+    chatState.pendingReadReceipts.forEach((row, peer) => {
+      if (!peer || !row) return;
+      pendingReadReceipts.push({
+        peer,
+        receiptId: row.receiptId || '',
+        lastReadAt: Number(row.lastReadAt) || 0,
+        lastReadMessageId: row.lastReadMessageId || '',
+        queuedAt: Number(row.queuedAt) || 0,
+      });
+    });
+    const payload = {
+      id: storageKey,
+      contacts: contactsArray,
+      conversations: conversationsArray,
+      deletedIds: Array.from(App.deletedChatMessageIds || []),
+      lastSyncTs: chatState.lastSyncTs || 0,
+      disappearingTimers,
+      defaultDisappearingSec: chatState.defaultDisappearingSec,
+      pendingReadReceipts,
+      readWatermarks: Array.from(chatState.readWatermarks.entries()).map(([peer, row]) => ({ peer, ...row })),
+      seenReceiptIds: chatState.seenReceiptIds.slice(-200),
+      pendingInboundReceipts: Array.from(chatState.pendingInboundReceipts.entries()).map(([peer, row]) => ({ peer, ...row })),
+    };
+    persistLog(
+      'WRITE_START',
+      'storageKey=' + storageKey +
+        ' conversationCount=' + conversationsArray.length +
+        ' totalMessageCount=' + countStoredMessages()
+    );
+    try {
+      const db = await openDatabase();
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.put(payload);
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+      persistLog('WRITE_OK', 'storageKey=' + storageKey + ' source=indexeddb');
+    } catch (err) {
+      persistLog('WRITE_FAIL', (err && (err.name || err.message)) ? (String(err.name || '') + ' ' + String(err.message || '')) : 'indexeddb');
+      // Fallback to localStorage if IndexedDB fails
+      try {
+        const smallPayload = JSON.stringify(payload);
+        window.localStorage.setItem(storageKey, smallPayload);
+        persistLog('WRITE_OK', 'storageKey=' + storageKey + ' source=localStorage');
+      } catch (lsErr) {
+        persistLog('WRITE_FAIL', (lsErr && lsErr.message) ? String(lsErr.message) : 'localStorage');
+        console.warn('Failed to persist chat state to both IndexedDB and localStorage', lsErr);
+      }
+    }
+  }
+  
+  // חלק debounce (chat-state.js) – מונע שמירות רבות מדי בזמן קצר | HYPER CORE TECH
+  let persistTimeout = null;
+  function persistState() {
+    persistLog('SCHEDULE', 'conversationCount=' + chatState.conversations.size + ' totalMessageCount=' + countStoredMessages());
+    if (persistTimeout) return;
+    persistTimeout = setTimeout(() => {
+      persistTimeout = null;
+      persistStateToIndexedDB();
+    }, 500);
+  }
+
+  function flushChatPersist() {
+    if (persistTimeout) {
+      clearTimeout(persistTimeout);
+      persistTimeout = null;
+    }
+    return persistStateToIndexedDB();
+  }
+
+  // חלק שחזור IndexedDB (chat-state.js) – שחזור מ-IndexedDB עם fallback ל-localStorage | HYPER CORE TECH
+  let restoreInFlight = null;
+  let restoreInFlightStorageKey = null;
+  let restoredStorageKey = null;
+
+  function statusRank(status) {
+    const rank = MESSAGE_STATUS_RANK[String(status || '')];
+    return typeof rank === 'number' ? rank : -1;
+  }
+
+  function scrubRestoredMessage(message) {
+    if (!message || typeof message !== 'object') return null;
+    if (!message.attachment) return message;
+    const att = message.attachment;
+    if (typeof App.inspectIncomingChatAttachment === 'function') {
+      const inspected = App.inspectIncomingChatAttachment(att);
+      if (!inspected || inspected.ok !== true) {
+        try {
+          console.warn('[SECURITY/PARSE_REJECT] kind=history reason=bad_attachment');
+        } catch (_) {}
+        return { ...message, attachment: null };
+      }
+    }
+    if (att && typeof att.name === 'string' && typeof App.sanitizeIncomingChatFileName === 'function') {
+      att.name = App.sanitizeIncomingChatFileName(att.name);
+    }
+    return message;
+  }
+
+  /**
+   * Merge disk snapshot messages with live in-memory messages.
+   * Never drop live messages because a stale snapshot arrives later.
+   */
+  function mergeConversationMessages(liveMessages, diskMessages, peer) {
+    const byId = new Map();
+    const cutoffTs = getCutoffForPeer(peer);
+
+    function consider(raw, preferLiveOnTie) {
+      const message = scrubRestoredMessage(raw);
+      if (!message || typeof message !== 'object') return;
+      if (!message.id || typeof message.id !== 'string') return;
+      if (isChatMessageMarkedDeleted(message)) return;
+      const ts = getMessageCreatedAt(message);
+      if (ts && ts < cutoffTs) return;
+      const existing = byId.get(message.id);
+      if (!existing) {
+        byId.set(message.id, message);
+        return;
+      }
+      const existingRank = statusRank(existing.status);
+      const nextRank = statusRank(message.status);
+      if (nextRank > existingRank) {
+        byId.set(message.id, message);
+        return;
+      }
+      if (nextRank < existingRank) return;
+      // Same status rank: live in-memory object MUST win over persisted disk.
+      if (preferLiveOnTie) {
+        byId.set(message.id, message);
+      }
+      // Disk on tie: keep existing (prefer live already in map).
+    }
+
+    (Array.isArray(diskMessages) ? diskMessages : []).forEach((m) => consider(m, false));
+    (Array.isArray(liveMessages) ? liveMessages : []).forEach((m) => consider(m, true));
+
+    const merged = Array.from(byId.values());
+    merged.sort((a, b) => getMessageCreatedAt(a) - getMessageCreatedAt(b));
+    if (MAX_MESSAGES_PER_THREAD && merged.length > MAX_MESSAGES_PER_THREAD) {
+      return merged.slice(-MAX_MESSAGES_PER_THREAD);
+    }
+    return merged;
+  }
+
+  async function restoreStateFromIndexedDB() {
+    const storageKey = getStorageKey();
+    if (!storageKey) return null;
+    
+    try {
+      const db = await openDatabase();
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.get(storageKey);
+      return new Promise((resolve) => {
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => resolve(null);
+      });
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function restoreState() {
+    const storageKey = getStorageKey();
+    if (!storageKey) return Promise.resolve();
+    // Idempotent restore per storageKey: concurrent callers share one promise;
+    // subsequent calls after success do not re-apply a destructive disk overwrite.
+    if (restoredStorageKey === storageKey && !restoreInFlight) {
+      persistLog('RESTORE', 'SKIP already-restored storageKey=' + storageKey);
+      return Promise.resolve();
+    }
+    if (restoreInFlight && restoreInFlightStorageKey === storageKey) {
+      return restoreInFlight;
+    }
+    // Different account/key: allow a new restore.
+    if (restoredStorageKey && restoredStorageKey !== storageKey) {
+      restoredStorageKey = null;
+    }
+
+    // Claim the in-flight slot synchronously so concurrent callers share one promise.
+    let settle;
+    const run = new Promise((resolve, reject) => {
+      settle = { resolve, reject };
+    });
+    restoreInFlight = run;
+    restoreInFlightStorageKey = storageKey;
+
+    (async () => {
+    try {
+      // נסה קודם IndexedDB
+      let parsed = await restoreStateFromIndexedDB();
+      
+      // אם אין ב-IndexedDB, נסה localStorage
+      if (!parsed) {
+        const raw = window.localStorage.getItem(storageKey);
+        if (raw) {
+          parsed = JSON.parse(raw);
+          // מיגרציה: מעביר נתונים מ-localStorage ל-IndexedDB
+          if (parsed) {
+            setTimeout(() => {
+              persistStateToIndexedDB();
+              // מנקה את localStorage אחרי מיגרציה מוצלחת
+              try { window.localStorage.removeItem(storageKey); } catch {}
+            }, 1000);
+          }
+        }
+      }
+      
+      if (!parsed || typeof parsed !== 'object') {
+        restoredStorageKey = storageKey;
+        return;
+      }
+      if (Array.isArray(parsed.contacts)) {
+        parsed.contacts.forEach((contact) => {
+          if (!contact || !contact.pubkey) {
+            return;
+          }
+          const key = contact.pubkey.toLowerCase();
+          const existing = chatState.contacts.get(key);
+          const restoredContact = {
+            pubkey: key,
+            name: contact.name || 'משתמש',
+            picture: contact.picture || '',
+            initials:
+              contact.initials || (typeof App.getInitials === 'function' ? App.getInitials(contact.name || '') : 'מש'),
+            lastMessage: contact.lastMessage || '',
+            lastTimestamp: typeof contact.lastTimestamp === 'number' ? contact.lastTimestamp : 0,
+            unreadCount: existing ? existing.unreadCount : 0,
+            lastReadTimestamp: typeof contact.lastReadTimestamp === 'number' ? contact.lastReadTimestamp : 0,
+            lastReadMessageId: typeof contact.lastReadMessageId === 'string' ? contact.lastReadMessageId : '',
+            profileFetchedAt: typeof contact.profileFetchedAt === 'number' ? contact.profileFetchedAt : 0,
+            archived: !!contact.archived,
+            emergencyMesh: !!contact.emergencyMesh,
+            meshReachable: !!contact.meshReachable,
+            meshRelation: contact.meshRelation || '',
+          };
+          // Prefer newer live contact timestamps when present.
+          if (existing && Number(existing.lastTimestamp) > Number(restoredContact.lastTimestamp)) {
+            restoredContact.lastMessage = existing.lastMessage;
+            restoredContact.lastTimestamp = existing.lastTimestamp;
+            restoredContact.unreadCount = existing.unreadCount;
+          }
+          chatState.contacts.set(key, restoredContact);
+        });
+      }
+      if (Array.isArray(parsed.disappearingTimers)) {
+        // Merge timers: do not wipe live map before applying disk.
+        parsed.disappearingTimers.forEach((row) => {
+          const peer = typeof row?.peer === 'string' ? row.peer.toLowerCase() : '';
+          if (!peer) return;
+          if (!chatState.disappearingTimers.has(peer)) {
+            chatState.disappearingTimers.set(peer, normalizeDisappearingTimerSec(row.seconds));
+          }
+        });
+      }
+      if (typeof parsed.defaultDisappearingSec === 'number' && parsed.defaultDisappearingSec > 0) {
+        chatState.defaultDisappearingSec = normalizeDisappearingTimerSec(parsed.defaultDisappearingSec);
+      }
+      if (Array.isArray(parsed.conversations)) {
+        parsed.conversations.forEach((entry) => {
+          if (!entry || !entry.key || !entry.peer) {
+            return;
+          }
+          const peer = entry.peer.toLowerCase();
+          const liveEntry = chatState.conversations.get(entry.key);
+          const liveMessages = liveEntry && Array.isArray(liveEntry.messages) ? liveEntry.messages : [];
+          const diskMessages = Array.isArray(entry.messages) ? entry.messages : [];
+          const messages = mergeConversationMessages(liveMessages, diskMessages, peer);
+          chatState.conversations.set(entry.key, {
+            peer,
+            messages,
+          });
+          messages.forEach((message) => {
+            if (!message?.id) {
+              return;
+            }
+            chatState.messageIndex.set(message.id, {
+              peer,
+              key: entry.key,
+            });
+          });
+        });
+      }
+      if (Array.isArray(parsed.deletedIds)) {
+        App.deletedChatMessageIds = App.deletedChatMessageIds || new Set();
+        parsed.deletedIds.forEach((id) => {
+          if (typeof id === 'string') App.deletedChatMessageIds.add(id);
+        });
+      }
+      if (typeof parsed.lastSyncTs === 'number') {
+        chatState.lastSyncTs = Math.max(Number(chatState.lastSyncTs) || 0, parsed.lastSyncTs);
+      }
+      if (Array.isArray(parsed.pendingReadReceipts)) {
+        parsed.pendingReadReceipts.forEach((row) => {
+          const peer = typeof row?.peer === 'string' ? row.peer.toLowerCase() : '';
+          if (!peer) return;
+          const prev = chatState.pendingReadReceipts.get(peer);
+          const nextAt = Number(row.lastReadAt) || 0;
+          if (prev && Number(prev.lastReadAt) > nextAt) return;
+          chatState.pendingReadReceipts.set(peer, {
+            receiptId: row.receiptId || '',
+            lastReadAt: nextAt,
+            lastReadMessageId: row.lastReadMessageId || '',
+            queuedAt: Number(row.queuedAt) || 0,
+          });
+        });
+      }
+      if (Array.isArray(parsed.readWatermarks)) {
+        parsed.readWatermarks.forEach((row) => {
+          const peer = typeof row?.peer === 'string' ? row.peer.toLowerCase() : '';
+          if (!peer) return;
+          chatState.readWatermarks.set(peer, {
+            receiptId: row.receiptId || '',
+            lastReadMessageId: row.lastReadMessageId || '',
+            lastReadAt: Number(row.lastReadAt) || 0,
+          });
+        });
+      }
+      if (Array.isArray(parsed.seenReceiptIds)) {
+        chatState.seenReceiptIds = parsed.seenReceiptIds.filter((id) => typeof id === 'string' && id).slice(-200);
+      }
+      if (Array.isArray(parsed.pendingInboundReceipts)) {
+        parsed.pendingInboundReceipts.forEach((row) => {
+          const peer = typeof row?.peer === 'string' ? row.peer.toLowerCase() : '';
+          if (!peer) return;
+          chatState.pendingInboundReceipts.set(peer, {
+            receiptId: row.receiptId || '',
+            lastReadMessageId: row.lastReadMessageId || '',
+            lastReadAt: Number(row.lastReadAt) || 0,
+            from: peer,
+          });
+        });
+      }
+      restoredStorageKey = storageKey;
+      persistLog(
+        'RESTORE',
+        'storageKey=' + storageKey +
+          ' conversationCount=' + chatState.conversations.size +
+          ' totalMessageCount=' + countStoredMessages()
+      );
+    } catch (err) {
+      persistLog('RESTORE', 'FAIL ' + (err && err.message ? String(err.message) : 'parse'));
+      console.warn('Failed to restore chat state', err);
+    }
+    recomputeUnreadCounts();
+    recalculateUnreadTotal();
+    try { replayPendingInboundReceipts(); } catch (_) {}
+    notify('contacts', getContactsSnapshot());
+    notify('unread', chatState.unreadTotal);
+    // אחרי שחזור – רענון שיחה פתוחה (פתיחה מהתרעה לפני שהקאש היה מוכן) | HYPER CORE TECH
+    notify('restored', { ok: true });
+    })()
+      .then(() => settle.resolve())
+      .catch((err) => settle.reject(err))
+      .finally(() => {
+        if (restoreInFlight === run) {
+          restoreInFlight = null;
+          restoreInFlightStorageKey = null;
+        }
+      });
+
+    return run;
+  }
+
+  // חלק צ'אט (chat-state.js) – מחשב מחדש את מספור ההודעות הלא נקראות לפי הזמן האחרון שהשיחה נקראה
+  function recomputeUnreadCounts() {
+    const self = (App.publicKey || '').toLowerCase();
+    chatState.contacts.forEach((contact) => {
+      const conversationKey = getConversationKey(contact.pubkey, self);
+      const conversation = conversationKey ? chatState.conversations.get(conversationKey) : null;
+      if (!conversation) {
+        contact.unreadCount = 0;
+        return;
+      }
+      const lastRead = contact.lastReadTimestamp || 0;
+      const unread = conversation.messages.reduce((total, message) => {
+        if (isSystemChatMessage(message)) return total;
+        const direction = message.direction || (message.from?.toLowerCase?.() === contact.pubkey ? 'incoming' : 'outgoing');
+        const createdAt = typeof message.createdAt === 'number' ? message.createdAt : typeof message.created_at === 'number' ? message.created_at : 0;
+        if (direction === 'incoming' && createdAt > lastRead) {
+          return total + 1;
+        }
+        return total;
+      }, 0);
+      contact.unreadCount = unread;
+    });
+  }
+
+  // חלק אופטימיזציה (chat-state.js) – מונע notify מיותר אם אין שינוי אמיתי | HYPER CORE TECH
+  function isPlaceholderContactName(name, pubkey) {
+    const n = String(name || '').trim();
+    if (!n || n === 'משתמש') return true;
+    const pk = String(pubkey || '').toLowerCase();
+    if (pk.length >= 8 && n === `משתמש ${pk.slice(0, 8)}`) return true;
+    if (/^משתמש [0-9a-f]{8}$/i.test(n)) return true;
+    return false;
+  }
+
+  function ensureContact(pubkey, profile = {}) {
+    if (!pubkey) return null;
+    const normalized = pubkey.toLowerCase();
+    const existing = chatState.contacts.get(normalized);
+    if (existing) {
+      // בדוק אם יש שינוי אמיתי לפני notify
+      let hasChange = false;
+      if (profile.name && profile.name !== existing.name) {
+        // לא לדרוס שם אמיתי ב־fallback "משתמש xxxxxxxx" | HYPER CORE TECH
+        const incomingPlaceholder = isPlaceholderContactName(profile.name, normalized);
+        const existingPlaceholder = isPlaceholderContactName(existing.name, normalized);
+        if (!(incomingPlaceholder && !existingPlaceholder)) {
+          existing.name = profile.name;
+          hasChange = true;
+        }
+      }
+      if (profile.picture && profile.picture !== existing.picture) { existing.picture = profile.picture; hasChange = true; }
+      if (profile.initials && profile.initials !== existing.initials) {
+        if (!(isPlaceholderContactName(profile.name, normalized) && !isPlaceholderContactName(existing.name, normalized))) {
+          existing.initials = profile.initials;
+          hasChange = true;
+        }
+      }
+      if (profile.profileFetchedAt) existing.profileFetchedAt = profile.profileFetchedAt;
+      if (profile.emergencyMesh) {
+        existing.emergencyMesh = true;
+      }
+      if (profile.meshReachable !== undefined) {
+        existing.meshReachable = !!profile.meshReachable;
+        hasChange = true;
+      }
+      if (profile.meshRelation) {
+        existing.meshRelation = profile.meshRelation;
+        hasChange = true;
+      }
+      // רק אם יש שינוי - עדכן UI
+      if (hasChange) {
+        debouncedNotifyContacts();
+        persistState();
+      }
+      return existing;
+    }
+    const fallbackName = (profile.name && !isPlaceholderContactName(profile.name, normalized))
+      ? profile.name
+      : (profile.name || 'משתמש');
+    const initials = profile.initials || (typeof App.getInitials === 'function' ? App.getInitials(fallbackName) : 'מש');
+    const contact = {
+      pubkey: normalized,
+      name: fallbackName,
+      picture: profile.picture || '',
+      initials,
+      lastMessage: '',
+      lastTimestamp: 0,
+      unreadCount: 0,
+      lastReadTimestamp: profile.lastReadTimestamp || 0,
+      profileFetchedAt: profile.profileFetchedAt || Math.floor(Date.now() / 1000),
+      archived: false,
+      emergencyMesh: !!profile.emergencyMesh,
+      meshReachable: profile.meshReachable !== undefined ? !!profile.meshReachable : !!profile.emergencyMesh,
+      meshRelation: profile.meshRelation || '',
+    };
+    chatState.contacts.set(normalized, contact);
+    debouncedNotifyContacts();
+    persistState();
+    return contact;
+  }
+
+  // חלק אופטימיזציה (chat-state.js) – עדכון מטא רק אם יש שינוי | HYPER CORE TECH
+  function updateContactMeta(pubkey, { lastMessage, timestamp, incrementUnread, forceTimestamp }) {
+    const contact = ensureContact(pubkey);
+    if (!contact) return;
+    let hasChange = false;
+    if (lastMessage !== undefined && lastMessage !== contact.lastMessage) {
+      contact.lastMessage = lastMessage;
+      hasChange = true;
+    }
+    // חלק צ'אט (chat-state.js) – מאפשר עדכון lastTimestamp גם לאחור (forceTimestamp) למשל אחרי מחיקה | HYPER CORE TECH
+    if (typeof timestamp === 'number' && (forceTimestamp || timestamp > (contact.lastTimestamp || 0))) {
+      contact.lastTimestamp = timestamp;
+      hasChange = true;
+    }
+    if (incrementUnread && (!contact.lastReadTimestamp || (typeof timestamp === 'number' && timestamp > contact.lastReadTimestamp))) {
+      contact.unreadCount = (contact.unreadCount || 0) + 1;
+      hasChange = true;
+    }
+    if (!incrementUnread && typeof timestamp === 'number' && timestamp > (contact.lastReadTimestamp || 0)) {
+      contact.lastReadTimestamp = timestamp;
+    }
+    if (hasChange) {
+      debouncedNotifyContacts();
+      persistState();
+    }
+  }
+
+  function recalculateUnreadTotal() {
+    chatState.unreadTotal = Array.from(chatState.contacts.values()).reduce((sum, contact) => sum + (contact.unreadCount || 0), 0);
+    notify('unread', chatState.unreadTotal);
+  }
+
+  function appendMessageToConversation(message) {
+    if (!message || typeof message !== 'object') return;
+    stampMessageTransport(message);
+    const { from, to, content, createdAt } = message;
+    // מדיה בלי כיתוב (תמונה/וידאו) מגיעה עם content ריק + attachment — חייבים לאפשר | HYPER CORE TECH
+    const hasAttachment = !!(message && message.attachment);
+    const hasText = typeof content === 'string' ? content.trim().length > 0 : !!content;
+    if (!from || !to || (!hasText && !hasAttachment)) return;
+    const key = getConversationKey(from, to);
+    if (!key) return;
+    const self = (App.publicKey || '').toLowerCase();
+    const peerPrefix = (from.toLowerCase() === self ? String(to) : String(from)).toLowerCase().slice(0, 8);
+    const messagesBefore = chatState.conversations.get(key)?.messages?.length || 0;
+    persistLog(
+      'APPEND',
+      'messageId=' + String(message.id || '') +
+        ' peer=' + peerPrefix +
+        ' direction=' + String(message.direction || '') +
+        ' source=' + inferMessageTransport(message) +
+        ' conversationKey=' + key +
+        ' contentLength=' + (hasText ? String(content).trim().length : 0) +
+        ' hasAttachment=' + (hasAttachment ? '1' : '0') +
+        ' messagesBefore=' + messagesBefore
+    );
+    let entry = chatState.conversations.get(key);
+    if (!entry) {
+      const peer = from.toLowerCase() === (App.publicKey || '').toLowerCase() ? to.toLowerCase() : from.toLowerCase();
+      entry = {
+        peer,
+        messages: [],
+      };
+      chatState.conversations.set(key, entry);
+    }
+    const existingIndex = entry.messages.findIndex((item) => item.id === message.id);
+    if (existingIndex !== -1) {
+      const existing = entry.messages[existingIndex];
+      let merged = false;
+      if (existing && !existing.logicalMessageId && message.logicalMessageId) {
+        existing.logicalMessageId = message.logicalMessageId;
+        merged = true;
+      }
+      if (existing && !existing.receiptMessageId && message.receiptMessageId) {
+        existing.receiptMessageId = message.receiptMessageId;
+        merged = true;
+      }
+      if (existing && !existing.transport && message.transport) {
+        existing.transport = message.transport;
+        merged = true;
+      }
+      if (existing && existing.p2p !== true && message.p2p === true) {
+        existing.p2p = true;
+        if (!existing.transport) existing.transport = 'DC';
+        merged = true;
+      }
+      if (existing && message.attachment && typeof message.attachment === 'object') {
+        if (!existing.attachment || typeof existing.attachment !== 'object') {
+          existing.attachment = message.attachment;
+          merged = true;
+        } else {
+          ['v', 'type', 'attachmentId', 'logicalMessageId', 'clientMessageId', 'enc', 'cipher', 'media', 'resource', 'chunks', 'context'].forEach((key) => {
+            if (existing.attachment[key] == null && message.attachment[key] != null) {
+              existing.attachment[key] = message.attachment[key];
+              merged = true;
+            }
+          });
+        }
+      }
+      if (merged) {
+        persistState();
+        try { retryInboundReadReceipt(entry.peer); } catch (_) {}
+      }
+      return;
+    }
+    if (isChatMessageMarkedDeleted(message)) {
+      return;
+    }
+    // חלק ניקוי אוטומטי (chat-state.js) – לא מקבלים הודעות שעברו את טיימר השיחה / תקרת 90 יום | HYPER CORE TECH
+    const createdAtTs = getMessageCreatedAt(message) || createdAt || 0;
+    if (createdAtTs && createdAtTs < getCutoffForPeer(entry.peer)) {
+      return;
+    }
+    entry.messages.push(message);
+    entry.messages.sort((a, b) => a.createdAt - b.createdAt);
+    if (MAX_MESSAGES_PER_THREAD && entry.messages.length > MAX_MESSAGES_PER_THREAD) {
+      const removed = entry.messages.splice(0, entry.messages.length - MAX_MESSAGES_PER_THREAD);
+      removed.forEach((old) => {
+        if (old?.id) chatState.messageIndex.delete(old.id);
+      });
+    }
+    if (message?.id) {
+      chatState.messageIndex.set(message.id, {
+        peer: entry.peer,
+        key,
+      });
+    }
+    // חלק תיקון מדיה (chat-state.js) – preview בסגנון וואטסאפ: תמונה/וידאו/מסמך במקום שם קובץ | HYPER CORE TECH
+    let attachmentPreview = '';
+    if (message?.attachment) {
+      const att = message.attachment;
+      const attMime = (att.type || '').toLowerCase();
+      const attName = (att.name || '').toLowerCase();
+      const attUrl = String(att.url || att.dataUrl || '').toLowerCase();
+      const isAudioAtt =
+        attMime.startsWith('audio/') ||
+        attName.includes('voice') ||
+        attName.includes('ptt') ||
+        ((attName.endsWith('.webm') || attUrl.includes('.webm')) && !attMime.startsWith('video/')) ||
+        (typeof att.duration === 'number' && att.duration > 0);
+      const isVideoAtt = attMime.startsWith('video/') || /\.(mp4|ogv|mov|avi|mkv|m4v)(\?|$)/i.test(attName) || /\.(mp4|ogv|mov|avi|mkv|m4v)(\?|$)/i.test(attUrl);
+      const isImageAtt = attMime.startsWith('image/') || /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg)(\?|$)/i.test(attName) || /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg)(\?|$)/i.test(attUrl);
+      const isArchiveAtt =
+        /\.(zip|rar|7z|tar|gz|tgz|bz2|xz)(\?|$)/i.test(attName) ||
+        attMime.includes('zip') ||
+        attMime.includes('rar') ||
+        attMime.includes('compressed') ||
+        attMime.includes('x-7z');
+      const isDocAtt =
+        /\.(pdf|docx?|xlsx?|pptx?|txt|csv|rtf|log)(\?|$)/i.test(attName) ||
+        attMime.includes('pdf') ||
+        attMime.includes('msword') ||
+        attMime.includes('officedocument');
+
+      if (isAudioAtt) {
+        const d = typeof att.duration === 'number' && att.duration > 0 ? att.duration : 0;
+        attachmentPreview = d > 0 ? `🎤 הודעה קולית (${Math.floor(d / 60)}:${String(Math.floor(d % 60)).padStart(2, '0')})` : '🎤 הודעה קולית';
+      } else if (isVideoAtt) {
+        attachmentPreview = '📹 וידאו';
+      } else if (isImageAtt) {
+        attachmentPreview = '📷 תמונה';
+      } else if (isArchiveAtt) {
+        attachmentPreview = '🗜️ קובץ מכווץ';
+      } else if (isDocAtt) {
+        attachmentPreview = '📄 מסמך';
+      } else {
+        attachmentPreview = '📎 קובץ';
+      }
+    }
+    const rawContent = typeof content === 'string' ? content.trim() : '';
+    const fileOnlyCaption =
+      !rawContent ||
+      /^📎\s+\S+$/u.test(rawContent) ||
+      (message?.attachment?.name &&
+        (rawContent === message.attachment.name || rawContent === `📎 ${message.attachment.name}`));
+    const messagePreview = (!fileOnlyCaption && rawContent) ? rawContent : (attachmentPreview || rawContent);
+    updateContactMeta(entry.peer, {
+      lastMessage: messagePreview,
+      timestamp: createdAt,
+      incrementUnread: message.direction === 'incoming',
+    });
+    recalculateUnreadTotal();
+    persistLog(
+      'APPEND',
+      'messageId=' + String(message.id || '') +
+        ' peer=' + String(entry.peer || '').slice(0, 8) +
+        ' messagesAfter=' + entry.messages.length
+    );
+    try { retryInboundReadReceipt(entry.peer); } catch (_) {}
+    persistState();
+    notify('message', { peer: entry.peer, message });
+  }
+
+  // חלק מחיקת מדיה P2P (chat-state.js) – שולח שומר p2p-send-{fileId}, מקבל שומר p2p-recv-{fileId} | HYPER CORE TECH
+  function extractP2PFileIdFromMessageId(messageId) {
+    if (typeof messageId !== 'string' || !messageId) return '';
+    if (messageId.startsWith('p2p-send-')) return messageId.slice('p2p-send-'.length);
+    if (messageId.startsWith('p2p-recv-')) return messageId.slice('p2p-recv-'.length);
+    return '';
+  }
+
+  function buildP2PDeletionAliases(messageId, fileId) {
+    const aliases = new Set();
+    if (messageId) aliases.add(String(messageId));
+    const fromId = extractP2PFileIdFromMessageId(messageId);
+    const fid = (fileId && String(fileId)) || fromId;
+    if (fid) {
+      aliases.add(fid);
+      aliases.add(`p2p-send-${fid}`);
+      aliases.add(`p2p-recv-${fid}`);
+    }
+    return Array.from(aliases);
+  }
+
+  function messageMatchesDeletionTarget(item, targetId) {
+    if (!item || !targetId) return false;
+    if (item.id === targetId) return true;
+    const targetFileId = extractP2PFileIdFromMessageId(targetId) || targetId;
+    const itemFileId = item.attachment?.fileId || extractP2PFileIdFromMessageId(item.id);
+    if (itemFileId && targetFileId && itemFileId === targetFileId) return true;
+    if (itemFileId && (targetId === `p2p-send-${itemFileId}` || targetId === `p2p-recv-${itemFileId}`)) return true;
+    return false;
+  }
+
+  function isChatMessageMarkedDeleted(message) {
+    if (!message?.id || !App.deletedChatMessageIds?.has) return false;
+    if (App.deletedChatMessageIds.has(message.id)) return true;
+    const aliases = buildP2PDeletionAliases(message.id, message.attachment?.fileId);
+    return aliases.some((id) => App.deletedChatMessageIds.has(id));
+  }
+
+  function markDeletedMessageAliases(messageId, fileId) {
+    buildP2PDeletionAliases(messageId, fileId).forEach((id) => {
+      App.deletedChatMessageIds?.add?.(id);
+    });
+  }
+
+  function findMessageIndexEntryForDeletion(messageId) {
+    if (!messageId) return null;
+    if (chatState.messageIndex.has(messageId)) {
+      return chatState.messageIndex.get(messageId);
+    }
+    const aliases = buildP2PDeletionAliases(messageId);
+    for (let i = 0; i < aliases.length; i += 1) {
+      const alias = aliases[i];
+      if (alias !== messageId && chatState.messageIndex.has(alias)) {
+        return chatState.messageIndex.get(alias);
+      }
+    }
+    // סריקה לפי fileId כשאין אינדקס (למשל p2p-send מול p2p-recv) | HYPER CORE TECH
+    const fileId = extractP2PFileIdFromMessageId(messageId) || messageId;
+    if (!fileId) return null;
+    for (const [key, entry] of chatState.conversations.entries()) {
+      const hit = (entry?.messages || []).find((item) => messageMatchesDeletionTarget(item, messageId));
+      if (hit) {
+        return { peer: entry.peer, key, message: hit };
+      }
+    }
+    return null;
+  }
+
+  function removeMessageFromConversation(peerPubkey, messageId) {
+    // חלק צ'אט (chat-state.js) – מסיר הודעה מהמצב המקומי ומעדכן מטא-דאטה כך שתיעלם מכל המכשירים לאחר רענון
+    if (!messageId) {
+      return;
+    }
+    const self = (App.publicKey || '').toLowerCase();
+    let normalizedPeer = peerPubkey ? peerPubkey.toLowerCase() : null;
+    let key = null;
+    if (normalizedPeer) {
+      key = getConversationKey(normalizedPeer, self);
+    } else {
+      const indexEntry = findMessageIndexEntryForDeletion(messageId);
+      normalizedPeer = indexEntry?.peer || null;
+      key = indexEntry?.key || null;
+    }
+    if (!normalizedPeer || !key) {
+      // גם בלי שיחה מקומית – מסמנים aliases כדי שלא תחזור הודעת מדיה | HYPER CORE TECH
+      markDeletedMessageAliases(messageId, extractP2PFileIdFromMessageId(messageId));
+      return;
+    }
+    const entry = chatState.conversations.get(key);
+    if (!entry || !Array.isArray(entry.messages) || !entry.messages.length) {
+      markDeletedMessageAliases(messageId, extractP2PFileIdFromMessageId(messageId));
+      return;
+    }
+    const index = entry.messages.findIndex((item) => messageMatchesDeletionTarget(item, messageId));
+    if (index === -1) {
+      markDeletedMessageAliases(messageId, extractP2PFileIdFromMessageId(messageId));
+      return;
+    }
+    const removed = entry.messages.splice(index, 1)[0];
+    const removedId = removed?.id || messageId;
+    const removedFileId = removed?.attachment?.fileId || extractP2PFileIdFromMessageId(removedId) || extractP2PFileIdFromMessageId(messageId);
+    if (removed?.id) chatState.messageIndex.delete(removed.id);
+    chatState.messageIndex.delete(messageId);
+    buildP2PDeletionAliases(removedId, removedFileId).forEach((alias) => {
+      chatState.messageIndex.delete(alias);
+    });
+    markDeletedMessageAliases(removedId, removedFileId);
+    markDeletedMessageAliases(messageId, removedFileId);
+    const lastMessage = entry.messages[entry.messages.length - 1];
+    let attachmentPreview = '';
+    if (lastMessage?.attachment) {
+      const att = lastMessage.attachment;
+      const attMime = (att.type || '').toLowerCase();
+      const attName = (att.name || '').toLowerCase();
+      const attUrl = String(att.url || att.dataUrl || '').toLowerCase();
+      if (attMime.startsWith('audio/') || attName.includes('voice') || ((attName.endsWith('.webm') || attUrl.includes('.webm')) && !attMime.startsWith('video/'))) {
+        attachmentPreview = '🎤 הודעה קולית';
+      } else if (attMime.startsWith('video/') || /\.(mp4|mov|mkv|m4v)(\?|$)/i.test(attName)) {
+        attachmentPreview = '📹 וידאו';
+      } else if (attMime.startsWith('image/') || /\.(jpe?g|png|gif|webp)(\?|$)/i.test(attName)) {
+        attachmentPreview = '📷 תמונה';
+      } else if (/\.(zip|rar|7z)(\?|$)/i.test(attName) || attMime.includes('zip')) {
+        attachmentPreview = '🗜️ קובץ מכווץ';
+      } else if (/\.(pdf|docx?|xlsx?|pptx?|txt|csv|rtf|log)(\?|$)/i.test(attName) || attMime.includes('pdf')) {
+        attachmentPreview = '📄 מסמך';
+      } else if (att.name) {
+        attachmentPreview = '📎 קובץ';
+      }
+    }
+    const lastContent = typeof lastMessage?.content === 'string' ? lastMessage.content.trim() : '';
+    const fileOnly =
+      !lastContent ||
+      /^📎\s+\S+$/u.test(lastContent) ||
+      (lastMessage?.attachment?.name &&
+        (lastContent === lastMessage.attachment.name || lastContent === `📎 ${lastMessage.attachment.name}`));
+    const messagePreview = (!fileOnly && lastContent) ? lastContent : (attachmentPreview || lastContent);
+    // חלק צ'אט (chat-state.js) – אחרי מחיקה נעדכן lastTimestamp גם אם ירד כדי שהשעה/מיון יהיו נכונים | HYPER CORE TECH
+    updateContactMeta(normalizedPeer, {
+      lastMessage: messagePreview,
+      timestamp: lastMessage?.createdAt || lastMessage?.created_at || 0,
+      forceTimestamp: true,
+    });
+    recalculateUnreadTotal();
+    persistState();
+    notify('message', {
+      peer: normalizedPeer,
+      removedMessageId: removedId,
+      removedMessageIds: buildP2PDeletionAliases(removedId, removedFileId).concat(
+        messageId && messageId !== removedId ? [messageId] : []
+      ),
+      removedFileId: removedFileId || null,
+    });
+  }
+
+  const READ_RECEIPT_SEEN_CAP = 200;
+  const readReceiptSendTimers = new Map();
+
+  function normalizeReceiptBoundaryId(id) {
+    const raw = String(id || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('p2p-file-')) return raw;
+    if (raw.startsWith('p2p-send-')) return 'p2p-file-' + raw.slice('p2p-send-'.length);
+    if (raw.startsWith('p2p-recv-')) return 'p2p-file-' + raw.slice('p2p-recv-'.length);
+    return raw;
+  }
+
+  function getReceiptBoundaryId(message) {
+    if (!message || isSystemChatMessage(message)) return '';
+    const att = message.attachment && typeof message.attachment === 'object' ? message.attachment : null;
+    const explicit = message.receiptMessageId
+      || message.logicalMessageId
+      || (att && (att.logicalMessageId || att.clientMessageId));
+    if (explicit) return normalizeReceiptBoundaryId(explicit);
+    const localId = String(message.id || '');
+    const fromPrefix = extractP2PFileIdFromMessageId(localId);
+    if (fromPrefix) return 'p2p-file-' + fromPrefix;
+    return normalizeReceiptBoundaryId(localId);
+  }
+
+  function findReceiptBoundaryIndex(ordered, boundaryId) {
+    const want = normalizeReceiptBoundaryId(boundaryId);
+    if (!want) return -1;
+    return ordered.findIndex((message) => getReceiptBoundaryId(message) === want);
+  }
+
+  function buildChatReadReceiptId(readerPubkey, peerPubkey, lastReadMessageId, lastReadAt) {
+    const reader = String(readerPubkey || '').toLowerCase();
+    const peer = String(peerPubkey || '').toLowerCase();
+    const boundary = normalizeReceiptBoundaryId(lastReadMessageId) || ('ts-' + String(Number(lastReadAt) || 0));
+    const id = 'rr-' + reader.slice(0, 16) + '-' + peer.slice(0, 16) + '-' + boundary;
+    return id.length > 240 ? id.slice(0, 240) : id;
+  }
+
+  function rememberReceiptId(receiptId) {
+    const id = String(receiptId || '');
+    if (!id) return false;
+    if (chatState.seenReceiptIds.indexOf(id) !== -1) return true;
+    chatState.seenReceiptIds.push(id);
+    if (chatState.seenReceiptIds.length > READ_RECEIPT_SEEN_CAP) {
+      chatState.seenReceiptIds.splice(0, chatState.seenReceiptIds.length - READ_RECEIPT_SEEN_CAP);
+    }
+    return false;
+  }
+
+  function orderedConversationMessages(messages) {
+    return (Array.isArray(messages) ? messages : []).map((message, index) => ({ message, index }))
+      .sort((a, b) => {
+        const ta = Number(a.message && a.message.createdAt) || 0;
+        const tb = Number(b.message && b.message.createdAt) || 0;
+        if (ta !== tb) return ta - tb;
+        return a.index - b.index;
+      })
+      .map((row) => row.message);
+  }
+
+  function isOutgoingChatMessage(message) {
+    if (!message) return false;
+    if (message.direction === 'outgoing') return true;
+    if (message.direction === 'incoming') return false;
+    const self = String(App.publicKey || '').toLowerCase();
+    return !!self && String(message.from || '').toLowerCase() === self;
+  }
+
+  function getOutgoingReceiptSequence(messages) {
+    return orderedConversationMessages(messages).filter((message) => {
+      if (!message || isSystemChatMessage(message) || !isOutgoingChatMessage(message)) return false;
+      return !!getReceiptBoundaryId(message);
+    });
+  }
+
+  function receiptMovesForward(ordered, current, nextId, nextAt) {
+    if (!current) return true;
+    const currentId = current.lastReadMessageId || '';
+    const currentIdx = currentId ? findReceiptBoundaryIndex(ordered, currentId) : -1;
+    const nextIdx = nextId ? findReceiptBoundaryIndex(ordered, nextId) : -1;
+    if (currentIdx !== -1 && nextIdx !== -1) return nextIdx > currentIdx;
+    if (currentIdx !== -1 && nextIdx === -1) return false;
+    if (currentIdx === -1 && nextIdx !== -1) return Number(nextAt) >= Number(current.lastReadAt || 0);
+    return Number(nextAt) > Number(current.lastReadAt || 0);
+  }
+
+  function markOutgoingThroughBoundary(ordered, boundaryIndex, lastReadAt, useId) {
+    let changed = 0;
+    ordered.forEach((message, index) => {
+      if (!isOutgoingChatMessage(message) || !message.id) return;
+      const covered = useId && boundaryIndex !== -1
+        ? index <= boundaryIndex
+        : (Number(message.createdAt) > 0 && Number(message.createdAt) < Number(lastReadAt));
+      if (!covered || message.status === 'read') return;
+      if (updateMessageStatus(message.id, 'read')) changed += 1;
+    });
+    return changed;
+  }
+
+  function applyIncomingReadReceipt(receipt, options) {
+    const opts = options || {};
+    const peer = String((receipt && (receipt.from || receipt.peer)) || '').toLowerCase();
+    const lastReadMessageId = normalizeReceiptBoundaryId(String((receipt && receipt.lastReadMessageId) || ''));
+    const lastReadAt = Number(receipt && (receipt.lastReadAt || receipt.lastReadTs)) || 0;
+    const receiptId = String((receipt && receipt.receiptId) || buildChatReadReceiptId(peer, App.publicKey, lastReadMessageId, lastReadAt));
+    if (!peer) return { ok: false, reason: 'missing-peer' };
+    if (!lastReadMessageId && !lastReadAt) return { ok: false, reason: 'missing-boundary' };
+    if (!opts.fromRetry && rememberReceiptId(receiptId)) {
+      return { ok: true, duplicate: true, receiptId };
+    }
+    const ordered = getOutgoingReceiptSequence(getConversationMessages(peer));
+    const boundaryIndex = lastReadMessageId ? findReceiptBoundaryIndex(ordered, lastReadMessageId) : -1;
+    const current = chatState.readWatermarks.get(peer) || null;
+    const currentCanon = current ? normalizeReceiptBoundaryId(current.lastReadMessageId || '') : '';
+    const currentIdx = currentCanon ? findReceiptBoundaryIndex(ordered, currentCanon) : -1;
+    if (lastReadMessageId && boundaryIndex === -1) {
+      chatState.pendingInboundReceipts.set(peer, {
+        receiptId,
+        lastReadMessageId,
+        lastReadAt,
+        from: peer,
+      });
+      persistState();
+      return { ok: true, pending: true, receiptId, boundaryFound: false };
+    }
+    if (lastReadMessageId && currentCanon && currentCanon === lastReadMessageId && boundaryIndex !== -1) {
+      markOutgoingThroughBoundary(ordered, boundaryIndex, lastReadAt, true);
+      persistState();
+      return { ok: true, applied: true, sameBoundary: true, receiptId, boundaryIndex };
+    }
+    if (!receiptMovesForward(ordered, current, lastReadMessageId, lastReadAt)) {
+      return {
+        ok: true,
+        ignored: true,
+        reason: 'regress',
+        receiptId,
+        boundaryFound: boundaryIndex !== -1,
+        currentBoundary: currentCanon,
+        nextBoundary: lastReadMessageId,
+        currentIdx,
+        nextIdx: boundaryIndex,
+        currentAt: Number(current && current.lastReadAt) || 0,
+        nextAt: lastReadAt,
+      };
+    }
+    const useId = boundaryIndex !== -1;
+    markOutgoingThroughBoundary(ordered, boundaryIndex, lastReadAt, useId);
+    chatState.readWatermarks.set(peer, {
+      receiptId,
+      lastReadMessageId: useId ? lastReadMessageId : (current && current.lastReadMessageId) || '',
+      lastReadAt: Math.max(lastReadAt, Number(current && current.lastReadAt) || 0),
+    });
+    if (useId) chatState.pendingInboundReceipts.delete(peer);
+    persistState();
+    return { ok: true, applied: true, receiptId, boundaryIndex };
+  }
+
+  function retryInboundReadReceipt(peerPubkey) {
+    const peer = String(peerPubkey || '').toLowerCase();
+    const pending = peer ? chatState.pendingInboundReceipts.get(peer) : null;
+    if (!pending) return false;
+    const ordered = getOutgoingReceiptSequence(getConversationMessages(peer));
+    if (pending.lastReadMessageId && findReceiptBoundaryIndex(ordered, pending.lastReadMessageId) === -1) {
+      return false;
+    }
+    applyIncomingReadReceipt(pending, { fromRetry: true });
+    return true;
+  }
+
+  function replayPendingInboundReceipts() {
+    const peers = Array.from(chatState.pendingInboundReceipts.keys());
+    peers.forEach((peer) => {
+      try { retryInboundReadReceipt(peer); } catch (_) {}
+    });
+  }
+
+  function markConversationRead(peerPubkey, upToMessageId) {
+    const normalized = peerPubkey?.toLowerCase?.();
+    if (!normalized) return;
+    const contact = chatState.contacts.get(normalized);
+    if (!contact) return;
+    const conversationKey = getConversationKey(normalized, App.publicKey || '');
+    const conversation = conversationKey ? chatState.conversations.get(conversationKey) : null;
+    const messages = conversation && Array.isArray(conversation.messages) ? conversation.messages : [];
+    let boundary = null;
+    if (upToMessageId) {
+      const want = normalizeReceiptBoundaryId(upToMessageId);
+      const found = messages.find((message) => message && (
+        message.id === upToMessageId || getReceiptBoundaryId(message) === want
+      ));
+      if (found && !isSystemChatMessage(found) && !isOutgoingChatMessage(found)) boundary = found;
+    }
+    if (!boundary) {
+      const ordered = orderedConversationMessages(messages);
+      for (let i = ordered.length - 1; i >= 0; i -= 1) {
+        const message = ordered[i];
+        if (!message || isSystemChatMessage(message) || isOutgoingChatMessage(message)) continue;
+        if (!getReceiptBoundaryId(message)) continue;
+        boundary = message;
+        break;
+      }
+    }
+    const lastReadTs = boundary?.createdAt || 0;
+    const boundaryId = boundary ? getReceiptBoundaryId(boundary) : '';
+    const sameBoundary = boundaryId
+      ? boundaryId === normalizeReceiptBoundaryId(contact.lastReadMessageId || '')
+      : !boundary;
+    if (boundary && !sameBoundary) {
+      contact.lastReadTimestamp = Math.max(Number(contact.lastReadTimestamp) || 0, lastReadTs);
+      if (boundaryId) contact.lastReadMessageId = boundaryId;
+      const pending = readReceiptSendTimers.get(normalized) || {};
+      pending.ts = lastReadTs;
+      pending.id = boundaryId;
+      if (pending.timer) clearTimeout(pending.timer);
+      pending.timer = setTimeout(() => {
+        readReceiptSendTimers.delete(normalized);
+        if (typeof App.sendReadReceipt === 'function') {
+          App.sendReadReceipt(normalized, pending.ts, pending.id || '');
+        }
+      }, 300);
+      readReceiptSendTimers.set(normalized, pending);
+    }
+    const hadUnread = contact.unreadCount || 0;
+    if (hadUnread) {
+      contact.unreadCount = 0;
+      recalculateUnreadTotal();
+    }
+    debouncedNotifyContacts();
+    persistState();
+  }
+
+  function getContactsSnapshot() {
+    return Array.from(chatState.contacts.values())
+      .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0));
+  }
+
+  function getConversationMessages(peerPubkey) {
+    const normalized = peerPubkey?.toLowerCase?.();
+    if (!normalized) return [];
+    const key = getConversationKey(normalized, App.publicKey || '');
+    if (!key) return [];
+    const entry = chatState.conversations.get(key);
+    return entry ? entry.messages.slice() : [];
+  }
+
+  function safeCallPicture(url) {
+    const s = typeof url === 'string' ? url.trim() : '';
+    if (/^https:\/\//i.test(s) || /^blob:/i.test(s) || /^data:image\//i.test(s)) return s;
+    return '';
+  }
+
+  function paintCallContact(root, contact) {
+    if (!root || !contact || typeof root.querySelector !== 'function') return false;
+    const pk = String(contact.pubkey || '').toLowerCase();
+    const realName = contact.name && !isPlaceholderContactName(contact.name, pk) ? String(contact.name) : '';
+    const nameEl = root.querySelector('.voice-call-dialog__name') || root.querySelector('.video-call-dialog__name');
+    if (realName && nameEl) nameEl.textContent = realName;
+    const avatar = root.querySelector('.voice-call-dialog__avatar') || root.querySelector('.video-call-dialog__avatar');
+    const initials = (contact.initials && contact.initials !== 'מש')
+      ? contact.initials
+      : (realName ? realName.trim().slice(0, 2) : 'מש');
+    if (!avatar) return !!realName;
+    const pic = safeCallPicture(contact.picture);
+    const doc = typeof document !== 'undefined' ? document : null;
+    if (pic && doc && typeof doc.createElement === 'function') {
+      avatar.textContent = '';
+      const img = doc.createElement('img');
+      img.alt = realName || '';
+      img.src = pic;
+      img.onerror = function onCallPicFail() {
+        try { img.remove(); } catch (_e) {}
+        avatar.textContent = initials;
+      };
+      avatar.appendChild(img);
+    } else if (realName) {
+      avatar.textContent = initials;
+    }
+    return true;
+  }
+
+  async function resolveCallContact(peerPubkey) {
+    const pk = String(peerPubkey || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(pk)) return null;
+    const existing = chatState.contacts.get(pk);
+    if (existing && !isPlaceholderContactName(existing.name, pk)) return existing;
+    if (typeof App.fetchProfile === 'function') {
+      try {
+        const profile = await App.fetchProfile(pk);
+        if (profile && typeof profile === 'object') {
+          ensureContact(pk, {
+            name: profile.name || profile.display_name || profile.displayName || '',
+            picture: profile.picture || '',
+            initials: profile.initials || '',
+          });
+        }
+      } catch (_e) {}
+    }
+    return chatState.contacts.get(pk) || existing || null;
+  }
+
+  function subscribe(topic, callback) {
+    if (!chatState.listeners[topic]) {
+      chatState.listeners[topic] = new Set();
+    }
+    chatState.listeners[topic].add(callback);
+    return () => chatState.listeners[topic].delete(callback);
+  }
+
+  function restoreChatModuleState() {
+    return restoreState();
+  }
+
+  function setLastSyncTs(ts) {
+    if (typeof ts !== 'number') return;
+    chatState.lastSyncTs = ts;
+    persistState();
+  }
+
+  function getLastSyncTs() {
+    return chatState.lastSyncTs || 0;
+  }
+
+  // חלק סטטוס הודעות (chat-state.js) – עדכון סטטוס הודעה (sending, sent, read, failed) | HYPER CORE TECH
+  function updateMessageStatus(messageId, newStatus) {
+    if (!messageId || !newStatus) return false;
+    const indexEntry = chatState.messageIndex.get(messageId);
+    if (!indexEntry) return false;
+    const entry = chatState.conversations.get(indexEntry.key);
+    if (!entry || !Array.isArray(entry.messages)) return false;
+    const message = entry.messages.find(m => m.id === messageId);
+    if (!message) return false;
+    const current = String(message.status || '');
+    if (current === 'read' && newStatus !== 'read') return false;
+    if (newStatus !== 'failed') {
+      const prevRank = MESSAGE_STATUS_RANK[current];
+      const nextRank = MESSAGE_STATUS_RANK[newStatus];
+      if (typeof prevRank === 'number' && typeof nextRank === 'number' && nextRank < prevRank) {
+        return false;
+      }
+    }
+    if (current === newStatus) return true;
+    message.status = newStatus;
+    persistState();
+    notify('message', { peer: indexEntry.peer, message, statusUpdate: true });
+    return true;
+  }
+
+  function queuePendingReadReceipt(peerPubkey, receipt) {
+    const peer = String(peerPubkey || '').toLowerCase();
+    if (!peer || !receipt) return false;
+    const nextAt = Number(receipt.lastReadAt) || 0;
+    const prev = chatState.pendingReadReceipts.get(peer);
+    if (prev) {
+      const prevAt = Number(prev.lastReadAt) || 0;
+      if (nextAt < prevAt) return false;
+      const nextBoundary = normalizeReceiptBoundaryId(receipt.lastReadMessageId || '');
+      const prevBoundary = normalizeReceiptBoundaryId(prev.lastReadMessageId || '');
+      if (nextAt === prevAt && prevBoundary && prevBoundary !== nextBoundary) {
+        return false;
+      }
+    }
+    chatState.pendingReadReceipts.set(peer, {
+      receiptId: receipt.receiptId || '',
+      lastReadAt: nextAt,
+      lastReadMessageId: normalizeReceiptBoundaryId(receipt.lastReadMessageId || ''),
+      queuedAt: Date.now(),
+    });
+    persistState();
+    return true;
+  }
+
+  function takePendingReadReceipt(peerPubkey) {
+    const peer = String(peerPubkey || '').toLowerCase();
+    if (!peer) return null;
+    const row = chatState.pendingReadReceipts.get(peer) || null;
+    if (row) {
+      chatState.pendingReadReceipts.delete(peer);
+      persistState();
+    }
+    return row;
+  }
+
+  function getPendingReadReceipts() {
+    const out = [];
+    chatState.pendingReadReceipts.forEach((row, peer) => {
+      out.push({ peer, ...row });
+    });
+    return out;
+  }
+
+  // חלק החלפת temp (chat-state.js) – מחליף הודעת optimistic ב-ID אמיתי בלי כפילות ב-UI | HYPER CORE TECH
+  function replaceOutgoingTempMessage(tempId, realMessage) {
+    if (!tempId || !realMessage?.id) return false;
+    const self = (App.publicKey || '').toLowerCase();
+    const peer = (realMessage.to || '').toLowerCase() || (realMessage.from || '').toLowerCase();
+    const key = getConversationKey(self, peer);
+    if (!key) {
+      appendMessageToConversation(realMessage);
+      return false;
+    }
+    let entry = chatState.conversations.get(key);
+    if (!entry) {
+      appendMessageToConversation(realMessage);
+      return false;
+    }
+    // אם ההודעה האמיתית כבר קיימת – רק מוחקים את ה-temp | HYPER CORE TECH
+    const realIdx = entry.messages.findIndex((item) => item.id === realMessage.id);
+    const tempIdx = entry.messages.findIndex((item) => item.id === tempId);
+    if (realIdx !== -1) {
+      if (tempIdx !== -1) {
+        entry.messages.splice(tempIdx, 1);
+        chatState.messageIndex.delete(tempId);
+        persistState();
+        notify('message', { peer: entry.peer, removedMessageId: tempId, replacedTempId: tempId, message: entry.messages[Math.min(realIdx, entry.messages.length - 1)] });
+      }
+      return true;
+    }
+    if (tempIdx === -1) {
+      appendMessageToConversation(realMessage);
+      return false;
+    }
+    entry.messages[tempIdx] = realMessage;
+    chatState.messageIndex.delete(tempId);
+    chatState.messageIndex.set(realMessage.id, { peer: entry.peer, key });
+    entry.messages.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    persistState();
+    notify('message', { peer: entry.peer, message: realMessage, replacedTempId: tempId });
+    return true;
+  }
+
+  function setContactArchived(peerPubkey, archived) {
+    const peer = typeof peerPubkey === 'string' ? peerPubkey.toLowerCase() : '';
+    if (!peer) return false;
+    const contact = ensureContact(peer);
+    if (!contact) return false;
+    const next = !!archived;
+    if (!!contact.archived === next) return true;
+    contact.archived = next;
+    persistState();
+    notify('contacts', getContactsSnapshot());
+    notify('message', { peer, contactArchived: next });
+    return true;
+  }
+
+  function isContactArchived(peerPubkey) {
+    const peer = typeof peerPubkey === 'string' ? peerPubkey.toLowerCase() : '';
+    if (!peer) return false;
+    return !!chatState.contacts.get(peer)?.archived;
+  }
+
+  function removeChatContact(peerPubkey) {
+    const peer = typeof peerPubkey === 'string' ? peerPubkey.toLowerCase() : '';
+    const self = (App.publicKey || '').toLowerCase();
+    if (!peer || !self) return false;
+    const key = getConversationKey(peer, self);
+    const entry = key ? chatState.conversations.get(key) : null;
+    if (entry && Array.isArray(entry.messages)) {
+      entry.messages.forEach((message) => {
+        if (message?.id) chatState.messageIndex.delete(message.id);
+        const fileId = message?.attachment?.fileId || extractP2PFileIdFromMessageId(message?.id);
+        if (fileId) {
+          buildP2PDeletionAliases(message.id, fileId).forEach((alias) => {
+            chatState.messageIndex.delete(alias);
+          });
+        }
+      });
+    }
+    if (key) chatState.conversations.delete(key);
+    chatState.contacts.delete(peer);
+    if (chatState.disappearingTimers?.has?.(peer)) {
+      chatState.disappearingTimers.delete(peer);
+    }
+    recalculateUnreadTotal();
+    persistState();
+    notify('contacts', getContactsSnapshot());
+    notify('message', { peer, contactRemoved: true });
+    return true;
+  }
+
+  Object.assign(App, {
+    chatState,
+    getConversationKey,
+    restoreChatState: restoreChatModuleState,
+    persistChatState: persistState,
+    flushChatPersist,
+    ensureChatContact: ensureContact,
+    appendChatMessage: appendMessageToConversation,
+    removeChatMessage: removeMessageFromConversation,
+    removeChatContact,
+    setChatContactArchived: setContactArchived,
+    isChatContactArchived: isContactArchived,
+    markChatConversationRead: markConversationRead,
+    applyIncomingReadReceipt,
+    buildChatReadReceiptId,
+    normalizeReceiptBoundaryId,
+    getReceiptBoundaryId,
+    getChatMessageTransport,
+    inferMessageTransport,
+    retryInboundReadReceipt,
+    getChatContacts: getContactsSnapshot,
+    getChatMessages: getConversationMessages,
+    subscribeChat: subscribe,
+    resolveCallContact,
+    paintCallContact,
+    chatStorageKey: getStorageKey,
+    clearChatRuntimeIdentity,
+    setChatLastSyncTs: setLastSyncTs,
+    getChatLastSyncTs: getLastSyncTs,
+    getChatRetentionCutoffTs,
+    pruneExpiredChatHistory,
+    CHAT_RETENTION_SECONDS,
+    DISAPPEARING_DEFAULT_SEC,
+    getDisappearingTimerSec,
+    setDisappearingTimerSec,
+    prunePeerDisappearingMessages,
+    ensureDisappearingIntroNotice,
+    appendDisappearingSystemNotice,
+    refreshDisappearingSystemNotices,
+    buildDisappearingNoticeContent,
+    isSystemChatMessage,
+    formatDisappearingTimerLabel,
+    updateChatMessageStatus: updateMessageStatus,
+    replaceOutgoingTempMessage,
+    isPlaceholderContactName,
+    queuePendingReadReceipt,
+    takePendingReadReceipt,
+    getPendingReadReceipts,
+  });
+
+  // חלק המתנה ל-restore (chat-state.js) – Promise שמאפשר ל-chat-service להמתין לטעינת הקאש | HYPER CORE TECH
+  let _restoreStateResolve = null;
+  App.chatStateReady = new Promise((resolve) => {
+    _restoreStateResolve = resolve;
+  });
+
+  function waitForPublicKey(maxMs = 4000) {
+    return new Promise((resolve) => {
+      if (typeof App.publicKey === 'string' && App.publicKey.length >= 64) {
+        resolve(App.publicKey);
+        return;
+      }
+      const started = Date.now();
+      const timer = setInterval(() => {
+        if (typeof App.publicKey === 'string' && App.publicKey.length >= 64) {
+          clearInterval(timer);
+          resolve(App.publicKey);
+          return;
+        }
+        if (Date.now() - started >= maxMs) {
+          clearInterval(timer);
+          resolve(App.publicKey || '');
+        }
+      }, 100);
+    });
+  }
+
+  async function doRestoreAndSignal() {
+    await waitForPublicKey(4000);
+    await restoreState();
+    try { refreshDisappearingSystemNotices(); } catch (_) {}
+    try { pruneExpiredChatHistory(); } catch (_) {}
+    if (_restoreStateResolve) {
+      _restoreStateResolve();
+      _restoreStateResolve = null;
+    }
+  }
+
+  if (!App._chatStateBootstrapped) {
+    App._chatStateBootstrapped = true;
+    if (typeof App.publicKey === 'string' && App.publicKey) {
+      doRestoreAndSignal();
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        setTimeout(doRestoreAndSignal, 500);
+      });
+    }
+  }
+})(window);

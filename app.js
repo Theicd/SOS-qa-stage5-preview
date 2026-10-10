@@ -1,0 +1,764 @@
+(function bootstrapApp(window) {
+  const reg = window.SOSIdentityStorageGeneration || (window.SOSIdentityStorageGeneration = {});
+  reg['app.js'] = 'browser-secure-cutover-v1';
+  window.SOS_IDENTITY_STORAGE_CODE_VERSION = 'browser-secure-cutover-v1';
+  const App = window.NostrApp || (window.NostrApp = {});
+  const tools = window.NostrTools;
+  if (!tools) {
+    console.error('NostrTools not available for bootstrap');
+    return;
+  }
+
+  const { SimplePool, finalizeEvent, getEventHash, getSignature } = tools;
+  
+  // הוספת finalizeEvent ל-App
+  if (!App.finalizeEvent && typeof finalizeEvent === 'function') {
+    App.finalizeEvent = finalizeEvent;
+  } else if (!App.finalizeEvent && typeof getEventHash === 'function' && typeof getSignature === 'function') {
+    // fallback אם finalizeEvent לא קיים
+    App.finalizeEvent = (event, privateKey) => {
+      event.id = getEventHash(event);
+      event.sig = getSignature(event, privateKey);
+      return event;
+    };
+  }
+
+  function hookPoolForEventSync(pool) {
+    if (!pool || App._eventSyncPoolHooked || typeof pool.subscribeMany !== 'function') {
+      return;
+    }
+
+    const originalSubscribeMany = pool.subscribeMany.bind(pool);
+    pool.subscribeMany = (relays, filters, handlers = {}) => {
+      const originalOnevent = handlers.onevent;
+      return originalSubscribeMany(relays, filters, Object.assign({}, handlers, {
+        onevent: (event) => {
+          try { App.EventSync?.ingestEvent?.(event, { source: 'relay' }); } catch (_) {}
+          if (typeof originalOnevent === 'function') {
+            return originalOnevent(event);
+          }
+        },
+      }));
+    };
+
+    App._eventSyncPoolHooked = true;
+  }
+  const LOGIN_METRIC_KIND = 1050; // חלק מדדי שימוש (app.js) – kind עבור רישום כניסות למערכת | HYPER CORE TECH
+  let loginMetricRetryHandle = null;
+
+  function scheduleLoginMetricRetry() {
+    if (loginMetricRetryHandle) {
+      return;
+    }
+    loginMetricRetryHandle = window.setTimeout(() => {
+      loginMetricRetryHandle = null;
+      publishLoginActivity();
+    }, 1200);
+  }
+
+  async function publishLoginActivity() {
+    // חלק מדדי שימוש (app.js) – שולח אירוע kind 1050 עם תג login כדי להזין את לוח הגידול | HYPER CORE TECH
+    if (App._loginMetricPublished) {
+      return;
+    }
+    if (
+      !App.pool ||
+      !Array.isArray(App.relayUrls) ||
+      App.relayUrls.length === 0 ||
+      !App.SosCryptoSigner?.hasIdentityKey() ||
+      !App.publicKey ||
+      typeof App.SosCryptoSigner.signLoginMetric !== 'function'
+    ) {
+      scheduleLoginMetricRetry();
+      return;
+    }
+
+    const tags = [['t', 'login']];
+    if (App.NETWORK_TAG) {
+      tags.push(['t', App.NETWORK_TAG]);
+    }
+
+    const event = {
+      kind: LOGIN_METRIC_KIND,
+      pubkey: App.publicKey,
+      created_at: Math.floor(Date.now() / 1000),
+      tags,
+      content: JSON.stringify({ type: 'login', at: new Date().toISOString() }),
+    };
+
+    try {
+      const signed = await Promise.resolve(App.SosCryptoSigner.signLoginMetric(event));
+      await App.pool.publish(App.relayUrls, signed);
+      App._loginMetricPublished = true;
+    } catch (error) {
+      console.warn('Login metric publish failed', error);
+      scheduleLoginMetricRetry();
+    }
+  }
+
+  // =======================
+  // מצב אורח - NostrApp (app.js) – זיהוי אם המשתמש עובד כאורח או כמשתמש מחובר | HYPER CORE TECH
+  // קוד זה אחראי לזהות האם המשתמש עובד כאורח (בלי מפתח) או כמשתמש מחובר
+  // =======================
+  // Call modules may load before or after this file; the secure call module also self-starts at load.
+  function notifyCallIdentity(reason) {
+    try {
+      if (typeof App.notifyCallIdentityReady === 'function') App.notifyCallIdentityReady(reason);
+    } catch (_e) {}
+  }
+
+  function bootGuestIdentity() {
+    try {
+      // F2B/F5A: Worker-authoritative durable browser path — never hydrate App.privateKey.
+      // Intent is decided BEFORE any raw-K read. Flag ON must never fall through to MAIN_THREAD hydrate.
+      const flagOn =
+        window.SOS_CRYPTO_WORKER_AUTHORITATIVE === true ||
+        window.__SOS_CRYPTO_WORKER_AUTHORITATIVE__ === true ||
+        (typeof localStorage !== 'undefined' && localStorage.getItem('SOS_CRYPTO_WORKER_AUTHORITATIVE') === '1');
+      const isNative =
+        window.SosNativeShell &&
+        typeof window.SosNativeShell.isNativeShell === 'function' &&
+        window.SosNativeShell.isNativeShell() === true;
+      const sessionOnly =
+        window.SOSKeyStorage &&
+        typeof window.SOSKeyStorage.isSessionOnly === 'function' &&
+        window.SOSKeyStorage.isSessionOnly();
+
+      if (flagOn && !isNative && !sessionOnly) {
+        // WORKER_AUTH_BOOT_CAN_FALL_THROUGH_TO_MAIN=false
+        // WORKER_AUTH_RAW_K_FALLBACK=false
+        App.privateKey = null;
+        function finishWorkerBootOk(res) {
+          App.privateKey = null;
+          if (res && res.meta && res.meta.pubkey) App.publicKey = res.meta.pubkey;
+          function continueWorkerBootOk() {
+            App.guestMode = false;
+            App.identityState = 'IDENTITY_OK';
+            try {
+              const SA = App.SessionAuthority || window.SosSessionAuthority;
+              if (SA && typeof SA.bindCurrentSession === 'function') {
+                const detached = typeof SA.isDetached === 'function' && SA.isDetached();
+                const already = typeof SA.isSessionValid === 'function' && SA.isSessionValid();
+                if (!detached && !already) {
+                  SA.bindCurrentSession({ accountPubkey: App.publicKey, bump: false });
+                }
+              }
+            } catch (_sa) {}
+            try {
+              publishLoginActivity();
+            } catch (_e2) {}
+            if (typeof App.loadOwnProfileMetadata === 'function') App.loadOwnProfileMetadata();
+            if (typeof App.subscribeOwnProfileMetadata === 'function') App.subscribeOwnProfileMetadata();
+            try {
+              App._topBarAuthUiReady = true;
+              if (typeof App.syncTopBarAuthUi === 'function') App.syncTopBarAuthUi();
+            } catch (_syncErr) {}
+            notifyCallIdentity('worker-boot');
+            try {
+              window.dispatchEvent(new CustomEvent('sos-identity-ready', { detail: { reason: 'worker-boot', pubkey: App.publicKey } }));
+            } catch (_idReady) {}
+            try {
+              const GI = App.GlobalIdentity || window.SosGlobalIdentity;
+              if (GI && typeof GI.ensureGlobalReachability === 'function') {
+                Promise.resolve(GI.ensureGlobalReachability('worker-boot')).catch(function () {});
+              }
+            } catch (_nip65) {}
+          }
+          function denyDisabledBoot() {
+            try {
+              const GAS = App.GlobalAccountStatusState || window.SosGlobalAccountStatusState;
+              if (GAS && typeof GAS.enforceLiveSession === 'function') GAS.enforceLiveSession();
+            } catch (_e) {}
+            finishWorkerBootFail('ACCOUNT_DISABLED');
+          }
+          function gateAfterReconcile() {
+            try {
+              const GAS = App.GlobalAccountStatusState || window.SosGlobalAccountStatusState;
+              if (GAS && typeof GAS.assertLoginAllowed === 'function' && App.publicKey) {
+                const gate = GAS.assertLoginAllowed(App.publicKey);
+                if (gate && gate.ok === false && gate.code === 'ACCOUNT_DISABLED') {
+                  denyDisabledBoot();
+                  return;
+                }
+              }
+            } catch (_g) {}
+            continueWorkerBootOk();
+          }
+          try {
+            const GA = App.GlobalAdmission || window.SosGlobalAdmission;
+            if (GA && typeof GA.reconcileAccountStatus === 'function' && App.publicKey) {
+              Promise.resolve(GA.reconcileAccountStatus(App.publicKey))
+                .then(function () {
+                  gateAfterReconcile();
+                })
+                .catch(function () {
+                  // Offline: cache DISABLED still denies; unknown/stale ACTIVE allows legacy boot.
+                  gateAfterReconcile();
+                });
+              return;
+            }
+          } catch (_rec) {}
+          gateAfterReconcile();
+        }
+        function finishWorkerBootFail(code) {
+          try {
+            console.warn('[F5A] worker auth boot fail-closed code=' + (code || 'WORKER_VAULT_UNAVAILABLE'));
+          } catch (_w) {}
+          App.privateKey = null;
+          App.guestMode = true;
+          App.identityState = code || 'WORKER_VAULT_UNAVAILABLE';
+          try {
+            App._topBarAuthUiReady = true;
+            if (typeof App.syncTopBarAuthUi === 'function') App.syncTopBarAuthUi();
+          } catch (_syncErr2) {}
+          notifyCallIdentity('worker-boot-fail');
+        }
+        function tryActivateVault(attempt) {
+          const vault = App.SosCryptoWorkerVault || window.SosCryptoWorkerVault;
+          if (!vault || typeof vault.tryActivateAuthoritative !== 'function') {
+            if (attempt < 40) {
+              App.identityState = 'WORKER_VAULT_INITIALIZING';
+              setTimeout(function () {
+                tryActivateVault(attempt + 1);
+              }, 50);
+              return;
+            }
+            finishWorkerBootFail('WORKER_VAULT_UNAVAILABLE');
+            return;
+          }
+          Promise.resolve(vault.tryActivateAuthoritative())
+            .then(function (res) {
+              if (res && res.ok) {
+                finishWorkerBootOk(res);
+                return;
+              }
+              finishWorkerBootFail((res && res.code) || 'WORKER_VAULT_UNAVAILABLE');
+            })
+            .catch(function (err) {
+              try {
+                console.warn('[F5A] worker auth boot failed', err && err.message);
+              } catch (_e) {}
+              finishWorkerBootFail('WORKER_VAULT_UNAVAILABLE');
+            });
+        }
+        tryActivateVault(0);
+        return;
+      }
+
+      const storedKey =
+        window.SOSKeyStorage && typeof window.SOSKeyStorage.readPrivateKeyRaw === 'function'
+          ? window.SOSKeyStorage.readPrivateKeyRaw()
+          : '';
+
+      if (storedKey && typeof storedKey === 'string' && storedKey.trim().length > 0) {
+        App.privateKey = storedKey;
+        if (typeof App.ensureKeys === 'function') {
+          const identity = App.ensureKeys();
+          if (identity && identity.ok === true) {
+            App.guestMode = false;
+          } else {
+            App.guestMode = true;
+            App.privateKey = null;
+            App.publicKey = null;
+          }
+        } else {
+          App.guestMode = false;
+        }
+      } else {
+        // F6C/F6J typed-only native custody: pubkey without raw K in WebView.
+        let typedPub = '';
+        try {
+          if (window.SOSKeyStorage && typeof window.SOSKeyStorage.getPublicKeyHint === 'function') {
+            typedPub = String(window.SOSKeyStorage.getPublicKeyHint() || '').trim().toLowerCase();
+          }
+        } catch (_hint) {
+          typedPub = '';
+        }
+        if (!typedPub || !/^[0-9a-f]{64}$/.test(typedPub)) {
+          try {
+            // Force native hydrate so memoryPub / publicKeyHint populate.
+            if (window.SOSKeyStorage && typeof window.SOSKeyStorage.readPrivateKeyRaw === 'function') {
+              window.SOSKeyStorage.readPrivateKeyRaw();
+            }
+            if (window.SOSKeyStorage && typeof window.SOSKeyStorage.getPublicKeyHint === 'function') {
+              typedPub = String(window.SOSKeyStorage.getPublicKeyHint() || '').trim().toLowerCase();
+            }
+          } catch (_h2) {
+            typedPub = '';
+          }
+        }
+        if (typedPub && /^[0-9a-f]{64}$/.test(typedPub)) {
+          App.privateKey = null;
+          App.publicKey = typedPub;
+          function bindTypedBootSession() {
+            try {
+              const GAS = App.GlobalAccountStatusState || window.SosGlobalAccountStatusState;
+              if (GAS && typeof GAS.assertLoginAllowed === 'function') {
+                const gate = GAS.assertLoginAllowed(typedPub);
+                if (gate && gate.ok === false && gate.code === 'ACCOUNT_DISABLED') {
+                  App.guestMode = true;
+                  App.publicKey = null;
+                  App.identityState = 'ACCOUNT_DISABLED';
+                  try {
+                    if (GAS.enforceLiveSession) GAS.enforceLiveSession();
+                  } catch (_e) {}
+                  return;
+                }
+              }
+            } catch (_tg) {}
+            App.guestMode = false;
+            App.identityState = 'IDENTITY_OK';
+            try {
+              const SA = App.SessionAuthority || window.SosSessionAuthority;
+              if (SA && typeof SA.bindCurrentSession === 'function') {
+                const detached = typeof SA.isDetached === 'function' && SA.isDetached();
+                const already = typeof SA.isSessionValid === 'function' && SA.isSessionValid();
+                if (!detached && !already) {
+                  SA.bindCurrentSession({ accountPubkey: typedPub, bump: false });
+                }
+              }
+            } catch (_saBoot) {}
+          }
+          try {
+            const GA = App.GlobalAdmission || window.SosGlobalAdmission;
+            if (GA && typeof GA.reconcileAccountStatus === 'function') {
+              Promise.resolve(GA.reconcileAccountStatus(typedPub))
+                .then(bindTypedBootSession)
+                .catch(bindTypedBootSession);
+            } else {
+              bindTypedBootSession();
+            }
+          } catch (_rec2) {
+            bindTypedBootSession();
+          }
+        } else {
+          App.guestMode = true;
+          App.privateKey = null;
+          App.publicKey = null;
+          if (typeof App.ensureKeys === 'function') {
+            try {
+              App.ensureKeys();
+            } catch (_e) {}
+          }
+        }
+      }
+      try {
+        publishLoginActivity();
+      } catch (_e2) {}
+      if (typeof App.loadOwnProfileMetadata === 'function') App.loadOwnProfileMetadata();
+      if (typeof App.subscribeOwnProfileMetadata === 'function') App.subscribeOwnProfileMetadata();
+    } catch (e) {
+      console.error('Guest mode init failed, falling back to guest:', e);
+      App.guestMode = true;
+      App.privateKey = null;
+      App.publicKey = null;
+    }
+    try {
+      App._topBarAuthUiReady = true;
+      if (typeof App.syncTopBarAuthUi === 'function') App.syncTopBarAuthUi();
+    } catch (_syncErr) {}
+    notifyCallIdentity('boot');
+  }
+  try {
+    const identityReady = window.SOSIdentityStorageReady || (window.SOSKeyStorage && window.SOSKeyStorage.ready);
+    if (identityReady && typeof identityReady.then === 'function') identityReady.then(bootGuestIdentity);
+    else bootGuestIdentity();
+  } catch (_bootErr) {
+    bootGuestIdentity();
+  }
+
+  App.profile = App.profile || {
+    name: 'משתמש אנונימי',
+    bio: 'יצירת תוכן מבוזר, בלי שוטר באמצע',
+    avatarInitials: 'AN',
+    picture: '',
+  };
+
+  if (!App.getInitials) {
+    console.warn('getInitials missing on App. Defaulting to first letters only.');
+    App.getInitials = (value = '') => value.trim().slice(0, 2).toUpperCase() || 'AN';
+  }
+
+  App.profile.avatarInitials = App.getInitials(App.profile.name || '');
+
+  if (!App.profileCache) {
+    App.profileCache = new Map();
+  }
+  App.profileCache.set(App.publicKey || 'self', {
+    name: App.profile.name,
+    bio: App.profile.bio,
+    picture: App.profile.picture,
+    initials: App.profile.avatarInitials,
+  });
+
+  if (!Array.isArray(App.relayUrls) || App.relayUrls.length === 0) {
+    // חלק Bootstrap (app.js) – מגדיר רשימת ריליים ברירת מחדל כאשר הקונפיגורציה לא סיפקה אחת
+    App.relayUrls = [
+      'wss://relay.snort.social',
+      'wss://nos.lol',
+      'wss://nostr-relay.xbytez.io',
+      'wss://nostr-02.uid.ovh',
+    ];
+  }
+
+  if (!Array.isArray(App.p2pRelayUrls) || App.p2pRelayUrls.length === 0) {
+    App.p2pRelayUrls = [
+      'wss://relay.snort.social',
+      'wss://nos.lol',
+      'wss://nostr-relay.xbytez.io',
+      'wss://nostr.0x7e.xyz',
+    ];
+  }
+
+  // חלק Bootstrap (app.js) – יצירת Pool והרצת מדדי התחברות פעם אחת בלבד בכל סשן
+  if (!App.pool) {
+    App.pool = new SimplePool();
+    hookPoolForEventSync(App.pool);
+    if (typeof App.notifyPoolReady === 'function') {
+      App.notifyPoolReady(App.pool);
+    }
+    const connectionStatus = document.getElementById('connection-status');
+    if (connectionStatus) {
+      connectionStatus.textContent = 'Pool initialized. Connecting to relays...';
+    }
+    console.log('Pool initialized');
+  }
+
+  hookPoolForEventSync(App.pool);
+
+  if (App.metadataPublishQueued && typeof App.publishProfileMetadata === 'function') {
+    App.publishProfileMetadata();
+  }
+
+  if (typeof App.renderProfile === 'function') {
+    // חלק Bootstrap (app.js) – דואג שהפרופיל הנוכחי יוצג מיד עם העלייה של האפליקציה
+    App.renderProfile();
+  }
+
+  // loadOwnProfileMetadata / subscribeOwnProfileMetadata run after SOSIdentityStorageReady inside bootGuestIdentity.
+
+  // חלק HOME FEED – הפעלת מצב טעינה מוקדם למניעת גלילה לפני טעינת הסט הראשון
+  try {
+    if (document.querySelector('.home-feed__viewport')) {
+      document.body.classList.add('home-feed--loading');
+    }
+  } catch (_) {}
+
+  // אל תטען את הפיד מחדש בעמודים שניים (למשל storage.html)
+  if (!App._bootstrapped && typeof App.loadFeed === 'function') {
+    App.loadFeed();
+  }
+
+  if (!App._bootstrapped && typeof App.initializeGrowthDashboard === 'function') {
+    App.initializeGrowthDashboard();
+  }
+
+  window.openCompose = function openCompose() {
+    // בדיקת מצב אורח - חסימת יצירת פוסט למשתמשים לא מחוברים | HYPER CORE TECH
+    if (typeof App.requireAuth === 'function') {
+      if (!App.requireAuth('כדי ליצור פוסט חדש צריך להתחבר או להירשם.')) {
+        return;
+      }
+    }
+    // חלק קומפוזר (app.js) – מפנה לפונקציית המודאל המרכזית ב-compose.js כדי למנוע מצבי תצוגה כפולים
+    if (typeof App.openCompose === 'function') {
+      App.openCompose.apply(App, arguments);
+      return;
+    }
+    const m = document.getElementById('composeModal');
+    if (m) m.style.display = 'flex';
+  };
+
+  window.closeCompose = function closeCompose() {
+    // חלק קומפוזר (app.js) – מפנה לפונקציית הסגירה המרכזית ב-compose.js
+    if (typeof App.closeCompose === 'function') {
+      App.closeCompose.apply(App, arguments);
+      return;
+    }
+    const m = document.getElementById('composeModal');
+    if (m) m.style.display = 'none';
+  };
+
+  // =======================
+  // דרישת התחברות לפעולות שכותבות לרשת (app.js) – Auth Guard | HYPER CORE TECH
+  // פונקציה זו משמשת כל הכפתורים של לייק, תגובה, עקוב, פרסום ועוד
+  // =======================
+  App.requireAuth = function(requirementText, onAuthenticated) {
+    const hasKey = !!(App.SosCryptoSigner && App.SosCryptoSigner.hasIdentityKey());
+
+    if (hasKey && App.guestMode === false) {
+      // כבר מחובר - אפשר להמשיך
+      if (typeof onAuthenticated === 'function') {
+        onAuthenticated();
+      }
+      return true;
+    }
+
+    // מצב אורח - מציג חלון התחברות / הרשמה
+    if (typeof App.openAuthPrompt === 'function') {
+      App.openAuthPrompt(requirementText || 'כדי להמשיך צריך להתחבר או להירשם.');
+    } else {
+      // נפילה אחורית: מעבר למסך auth.html עם פרמטר redirect
+      const redirect = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = 'auth.html?redirect=' + redirect;
+    }
+
+    return false;
+  };
+
+  window.publishPost = App.publishPost || (() => {});
+  window.openProfileSettings = App.openProfileSettings || (() => {});
+  window.closeProfileSettings = App.closeProfileSettings || (() => {});
+  window.saveProfileSettings = App.saveProfileSettings || (() => {});
+  window.likePost = App.likePost || (() => {});
+  window.sharePost = App.sharePost || (() => {});
+  window.openGrowthDashboard = App.openGrowthDashboard || (() => {});
+  window.closeGrowthDashboard = App.closeGrowthDashboard || (() => {});
+  window.refreshGrowthDashboard = App.refreshGrowthDashboard || (() => {});
+  window.openOptionPurchase = App.openOptionPurchase || (() => {});
+  window.openContractDocs = App.openContractDocs || (() => {});
+
+  // חלק סרגל עליון (app.js) – ניהול תפריט הפרופיל שנפתח תחת כפתור האווטר העליון
+  (function initTopBarProfileMenu() {
+    const profileWrapper = document.getElementById('topBarProfile');
+    if (!profileWrapper) {
+      return;
+    }
+
+    const profileButton = document.getElementById('topBarProfileButton');
+    const profileMenu = document.getElementById('topBarProfileMenu');
+    const selfButton = document.getElementById('topBarProfileSelf');
+    const growthButton = document.getElementById('topBarProfileGrowth');
+    const homeButton = document.getElementById('topBarProfileHome');
+    const keyButton = document.getElementById('topBarProfileKey');
+    const contractButton = document.getElementById('topBarProfileContract');
+    const storageButton = document.getElementById('topBarProfileStorage');
+    const miscMenuButton = document.getElementById('topBarMiscMenu');
+    const miscSubmenu = document.getElementById('topBarMiscSubmenu');
+
+    if (!profileButton || !profileMenu) {
+      return;
+    }
+
+    // מניעת חיבור כפול של מאזינים בעת טעינת עמוד נוסף
+    if (profileWrapper.dataset.bound === '1') {
+      return;
+    }
+
+    const closeMenu = () => {
+      profileMenu.hidden = true;
+      profileButton.setAttribute('aria-expanded', 'false');
+      // סגירת תת-תפריט שונות
+      if (miscSubmenu) {
+        miscSubmenu.hidden = true;
+        if (miscMenuButton) {
+          miscMenuButton.classList.remove('top-bar__dropdown-item--active');
+        }
+      }
+    };
+
+    const openMenu = () => {
+      profileMenu.hidden = false;
+      profileButton.setAttribute('aria-expanded', 'true');
+    };
+
+    const toggleMenu = () => {
+      if (profileMenu.hidden) {
+        openMenu();
+      } else {
+        closeMenu();
+      }
+    };
+
+    // חלק תת-תפריט שונות (app.js) – ניהול פתיחה/סגירה של תת-תפריט | HYPER CORE TECH
+    const toggleMiscSubmenu = () => {
+      if (!miscSubmenu || !miscMenuButton) return;
+      
+      const wasHidden = miscSubmenu.hidden;
+      if (wasHidden) {
+        miscSubmenu.hidden = false;
+        miscMenuButton.classList.add('top-bar__dropdown-item--active');
+      } else {
+        miscSubmenu.hidden = true;
+        miscMenuButton.classList.remove('top-bar__dropdown-item--active');
+      }
+    };
+
+    profileButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleMenu();
+    });
+
+    window.addEventListener('click', (event) => {
+      if (!profileWrapper.contains(event.target)) {
+        closeMenu();
+      }
+    });
+
+    // חלק תת-תפריט שונות (app.js) – כעת נפתח מיד ללא סיסמה | HYPER CORE TECH
+    if (miscMenuButton) {
+      miscMenuButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toggleMiscSubmenu();
+      });
+    }
+
+    if (selfButton) {
+      selfButton.addEventListener('click', () => {
+        closeMenu();
+        window.location.href = 'profile.html';
+      });
+    }
+
+    if (growthButton) {
+      growthButton.addEventListener('click', () => {
+        closeMenu();
+        if (typeof window.openGrowthDashboard === 'function') {
+          window.openGrowthDashboard();
+        }
+      });
+    }
+
+    if (homeButton) {
+      homeButton.addEventListener('click', () => {
+        closeMenu();
+        window.location.href = 'index.html';
+      });
+    }
+
+    if (keyButton) {
+      keyButton.addEventListener('click', () => {
+        closeMenu();
+        if (typeof window.openKeyViewer === 'function') {
+          window.openKeyViewer();
+        }
+      });
+    }
+
+    // חלק חוזה חכם (app.js) – כפתור בתפריט הפרופיל לפתיחת לוח החוזה החכם כמו בתפריט התחתון
+    if (contractButton) {
+      contractButton.addEventListener('click', () => {
+        closeMenu();
+        if (typeof App.openContractDashboardV2 === 'function') {
+          App.openContractDashboardV2();
+        } else if (typeof window.openContractDashboardV2 === 'function') {
+          window.openContractDashboardV2();
+        }
+      });
+    }
+
+    // חלק אחסון (app.js) – ניווט מהתפריט העליון לעמוד האחסון | HYPER CORE TECH
+    if (storageButton) {
+      storageButton.addEventListener('click', () => {
+        closeMenu();
+        window.location.href = 'storage.html';
+      });
+    }
+
+    const doomLauncher = document.getElementById('videosDoomLauncher');
+    if (doomLauncher) {
+      doomLauncher.addEventListener('click', () => {
+        closeMenu();
+        window.open('./doom-multiplayer.html', 'doomGame', 'width=1200,height=800');
+      });
+    }
+    const nzpLauncher = document.getElementById('videosNzpLauncher');
+    if (nzpLauncher) {
+      nzpLauncher.addEventListener('click', () => {
+        closeMenu();
+        if (typeof App.openNzpGame === 'function') App.openNzpGame();
+        else if (typeof window.openNzpGame === 'function') window.openNzpGame();
+      });
+    }
+    const triviaLauncher = document.getElementById('videosTriviaLauncher');
+    if (triviaLauncher) {
+      triviaLauncher.addEventListener('click', () => {
+        closeMenu();
+        if (typeof App.openTriviaGame === 'function') App.openTriviaGame();
+        else if (typeof window.NostrApp?.openTriviaGame === 'function') window.NostrApp.openTriviaGame();
+      });
+    }
+
+    // חלק תת-תפריט שונות (app.js) – מאזינים לכפתורים בתת-תפריט | HYPER CORE TECH
+    const newsButton = document.getElementById('newsToggleTop');
+    if (newsButton) {
+      newsButton.addEventListener('click', () => {
+        closeMenu();
+        window.location.href = 'news.html';
+      });
+    }
+
+    // חלק כפתור משחקים – מחובר בנפרד מחוץ לתפריט (גם לאורחים) | HYPER CORE TECH
+
+    const datingButton = document.getElementById('datingToggleTop');
+    if (datingButton) {
+      datingButton.addEventListener('click', () => {
+        closeMenu();
+        window.location.href = 'dating.html';
+      });
+    }
+
+    profileWrapper.dataset.bound = '1';
+  })();
+
+  // חלק כפתור משחקים בטופ־בר (app.js) – גישה מהירה לפיד משחקים גם במצב אורח | HYPER CORE TECH
+  (function initTopBarGamesButton() {
+    const gamesButton = document.getElementById('gamesToggleTop');
+    if (!gamesButton || gamesButton.dataset.bound === '1') return;
+    gamesButton.dataset.bound = '1';
+    gamesButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        const menu = document.getElementById('topBarProfileMenu');
+        const btn = document.getElementById('topBarProfileButton');
+        if (menu) menu.hidden = true;
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+      } catch (_) {}
+      if (typeof App.openGamesPanel === 'function') {
+        App.openGamesPanel('./games.html');
+        return;
+      }
+      if (typeof window.openGamesPanel === 'function') {
+        window.openGamesPanel('./games.html');
+        return;
+      }
+      window.location.href = 'games.html';
+    });
+  })();
+
+  // חלק כפתור LIVE TV בטופ־בר (app.js) – פיד ערוצים כמו משחקים | HYPER CORE TECH
+  (function initTopBarLiveTvButton() {
+    const liveTvButton = document.getElementById('liveTvToggleTop');
+    if (!liveTvButton || liveTvButton.dataset.bound === '1') return;
+    liveTvButton.dataset.bound = '1';
+    liveTvButton.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        const menu = document.getElementById('topBarProfileMenu');
+        const btn = document.getElementById('topBarProfileButton');
+        if (menu) menu.hidden = true;
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+      } catch (_) {}
+      if (typeof App.openLiveTvFeed === 'function') {
+        App.openLiveTvFeed();
+        return;
+      }
+      if (typeof window.openLiveTvFeed === 'function') {
+        window.openLiveTvFeed();
+      }
+    });
+  })();
+
+  // חלק משחק טריוויה – מוודא שסקריפט המשחק נטען פעם אחת בלבד לאחר שהאפליקציה מוכנה
+  if (!document.getElementById('triviaGameScript')) {
+    const triviaScript = document.createElement('script');
+    triviaScript.src = './game-trivia.js';
+    triviaScript.id = 'triviaGameScript';
+    triviaScript.defer = true;
+    document.body.appendChild(triviaScript);
+  }
+  // סימון שהאתחול הכבד בוצע – כדי להימנע מריצה חוזרת בדפים נוספים
+  App._bootstrapped = true;
+})(window);

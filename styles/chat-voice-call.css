@@ -1,0 +1,360 @@
+/* חלק שיחות קול (chat-voice-call.css) – עיצוב דיאלוג שיחות קוליות בסגנון וואטסאפ */
+
+.voice-call-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 12050 !important; /* מעל #chatPanel (deep-link 10050) ומעל תפריטי צ'אט | HYPER CORE TECH */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: voiceCallFadeIn 0.3s ease;
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – כיבוד hidden כדי למנוע שבירת פריסה ע"י אלמנטים מוסתרים | HYPER CORE TECH */
+.voice-call-dialog [hidden] { display: none !important; }
+
+@keyframes voiceCallFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* מענה מ-APK – מסך אטום מיד, בלי לראות צ'אט/טעינה מאחור | HYPER CORE TECH */
+.voice-call-dialog--auto-answer {
+  animation: none !important;
+  opacity: 1 !important;
+  background: #111b21;
+}
+.voice-call-dialog--auto-answer .voice-call-dialog__backdrop {
+  background: #111b21 !important;
+  backdrop-filter: none !important;
+}
+.voice-call-dialog--auto-answer .voice-call-dialog__backdrop::before,
+.voice-call-dialog--auto-answer .voice-call-dialog__backdrop::after {
+  display: none;
+}
+
+body.sos-call-active #chatPanel {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+/* אם אין דיאלוג שיחה פתוח – אל תסתירו שיחות/פרופיל (דגל תקוע) | HYPER CORE TECH */
+body.sos-call-active:not(:has(.voice-call-dialog)):not(:has(.video-call-dialog)) #chatPanel,
+body.sos-call-active:not(:has(.voice-call-dialog)):not(:has(.video-call-dialog)) #profilePanel,
+body.sos-call-active:not(:has(.voice-call-dialog)):not(:has(.video-call-dialog)) #publicProfilePanel {
+  display: revert !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+body.sos-call-active #sosLoadNugOverlay,
+body.sos-call-active .videos-feed__card--loadnug,
+body.sos-call-active #videosLoadingOverlay,
+body.sos-call-active #videosSoftLoading,
+body.sos-call-active.videos-boot-loading #sosLoadNugOverlay {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.voice-call-dialog__backdrop {
+  position: absolute;
+  inset: 0;
+  background: #111b21;
+  overflow: hidden;
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – רקע דף שיחות, בלי רשת/סיבוב | HYPER CORE TECH */
+.voice-call-dialog__backdrop::before,
+.voice-call-dialog__backdrop::after {
+  content: none;
+  display: none;
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – עיצוב מסך מלא כמו שיחת וידיאו | HYPER CORE TECH */
+.voice-call-dialog__content {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 0;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 60px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 40px);
+}
+
+.voice-call-dialog__header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – כותרת עליונה כמו בשיחת וידיאו | HYPER CORE TECH */
+.voice-call-dialog__topbar {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  text-align: center;
+  padding: 14px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #202c33;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.voice-call-dialog__topbar-title {
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #e9edef;
+  margin: 0;
+}
+
+.voice-call-dialog__topbar-sub {
+  margin-top: 6px;
+  font-size: 14px;
+  opacity: .9;
+  color: #8696a0;
+}
+
+.voice-call-dialog__topbar[hidden] {
+  display: none !important;
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – אווטאר גדול יותר כמו בשיחת וידיאו | HYPER CORE TECH */
+.voice-call-dialog__avatar {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3rem;
+  font-weight: 700;
+  color: #fff;
+  box-shadow: 0 16px 48px rgba(34, 211, 238, 0.3);
+  overflow: hidden;
+  animation: voiceCallPulse 2s ease-in-out infinite;
+  border: 3px solid rgba(34, 211, 238, 0.4);
+}
+
+@keyframes voiceCallPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 12px 32px rgba(35, 116, 225, 0.4);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 16px 48px rgba(35, 116, 225, 0.6);
+  }
+}
+
+.voice-call-dialog__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – טקסט שם וסטטוס גדול יותר | HYPER CORE TECH */
+.voice-call-dialog__name {
+  margin: 0;
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.voice-call-dialog__status {
+  margin: 0;
+  font-size: 1.1rem;
+  color: rgba(255, 255, 255, 0.8);
+  animation: voiceCallBlink 1.5s ease-in-out infinite;
+}
+
+@keyframes voiceCallBlink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.voice-call-dialog__timer {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.voice-call-dialog__actions {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.voice-call-dialog__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+  font-size: 1.5rem;
+  font-weight: 600;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  will-change: transform;
+}
+
+.voice-call-dialog__btn:hover {
+  transform: scale(1.1);
+}
+
+.voice-call-dialog__btn:active {
+  transform: scale(0.95);
+}
+
+.voice-call-dialog__btn span {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.voice-call-dialog__btn--accept {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(16, 185, 129, 0.4);
+}
+
+.voice-call-dialog__btn--accept:hover {
+  box-shadow: 0 12px 32px rgba(16, 185, 129, 0.6);
+}
+
+.voice-call-dialog__btn--end {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(239, 68, 68, 0.4);
+}
+
+.voice-call-dialog__btn--end:hover {
+  box-shadow: 0 12px 32px rgba(239, 68, 68, 0.6);
+}
+
+.voice-call-dialog__btn--mute {
+  background: var(--card-alt);
+  color: var(--text);
+  border: 2px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.voice-call-dialog__btn--mute:hover {
+  background: var(--card);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+.voice-call-dialog__btn--mute.is-muted {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 8px 24px rgba(245, 158, 11, 0.4);
+}
+
+.voice-call-dialog__btn--mute.is-muted:hover {
+  box-shadow: 0 12px 32px rgba(245, 158, 11, 0.6);
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – אינדיקטור שיחה פעילה בכותרת */
+.chat-conversation__icon--calling {
+  animation: voiceCallIconPulse 1.5s ease-in-out infinite;
+  color: var(--primary) !important;
+}
+
+@keyframes voiceCallIconPulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – התאמה למובייל - מסך מלא | HYPER CORE TECH */
+@media (max-width: 768px) {
+  .voice-call-dialog__content {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 40px);
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 30px);
+  }
+
+  .voice-call-dialog__avatar {
+    width: 120px;
+    height: 120px;
+    font-size: 2.5rem;
+  }
+
+  .voice-call-dialog__name {
+    font-size: 1.6rem;
+  }
+
+  .voice-call-dialog__btn {
+    width: 68px;
+    height: 68px;
+    font-size: 1.4rem;
+  }
+
+  .voice-call-dialog__btn span {
+    font-size: 0.75rem;
+  }
+}
+
+/* חלק שיחות קול (chat-voice-call.css) – אנימציות נוספות */
+@keyframes voiceCallRing {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  10%, 30% {
+    transform: rotate(-10deg);
+  }
+  20%, 40% {
+    transform: rotate(10deg);
+  }
+  50% {
+    transform: rotate(0deg);
+  }
+}
+
+.voice-call-dialog--incoming .voice-call-dialog__avatar {
+  animation: voiceCallPulse 2s ease-in-out infinite, voiceCallRing 2s ease-in-out infinite;
+}

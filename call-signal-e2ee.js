@@ -1,0 +1,2404 @@
+// call-signal-e2ee.js – NIP-59 Gift Wrap (kind 1059) + NIP-44 for private call signaling | HYPER CORE TECH
+// Browser runtime may lack NostrTools.nip59 (CDN 2.7.x); implement with nip44 + finalizeEvent only.
+(function initCallSignalE2ee(window) {
+  const App = window.NostrApp || (window.NostrApp = {});
+
+  const CALL_SIGNAL_FAMILY = 'sos-call-signal';
+  const CALL_SIGNAL_VERSION = 1;
+  const SEAL_KIND = 13;
+  const GIFT_WRAP_KIND = 1059;
+  const RUMOR_KIND = 25050;
+  const TWO_DAYS_SEC = 2 * 24 * 60 * 60;
+  const MAX_SIGNAL_SDP_CHARS = 64 * 1024;
+  const MAX_SEEN_SIGNAL_IDS = 400;
+  const MAX_SEEN_WRAP_IDS = 400;
+  /** Deterministic call-signaling relays — must overlap Android SosRelayWatcher.RELAYS. */
+  const CANONICAL_CALL_RELAYS = [
+    'wss://relay.snort.social',
+    'wss://nos.lol',
+    'wss://nostr-relay.xbytez.io',
+    'wss://nostr-02.uid.ovh',
+  ];
+  const WEB_RECOVERY_MAX_MS = 20000;
+  const WEB_RECOVERY_INTERVAL_MS = 750;
+  const WEB_RECOVERY_HEALTHY_INTERVAL_MS = 3000;
+  const WEB_RECOVERY_QUERY_LIMIT = 48;
+  /** Session-scoped: exclude call relays that reject Gift Wrap publish with auth-required. */
+  const callRelayAuthExcluded = new Set();
+  /** Session-scoped: relays that CLOSE our #p read with auth-required (recipient NIP-42 not done on web). */
+  const callRelayReadAuthRequired = new Set();
+  /** Session-scoped: relays that accept Gift Wrap only after NIP-42 — they gate 1059 reads the same way. */
+  const callRelayWriteAuthGated = new Set();
+  const MIN_DELIVERY_CAPABLE_RELAYS = 2;
+  let secureSubHealthy = false;
+  const FORCED_SUBSCRIBE_COALESCE_MS = 5000;
+  let lastForcedSubscribeAt = 0;
+
+  const FRESHNESS_SEC = {
+    ring: 60,
+    offer: 60,
+    answer: 60,
+    candidate: 120,
+    candidates: 120,
+    disconnect: 120,
+  };
+
+  const seenSignalIds = new Map(); // signalId -> tsMs
+  const seenWrapIds = new Map(); // outer wrap event id -> tsMs
+  const secureOfferCache = new Map(); // peer -> { offer, media, sessionId, wrapId, at }
+  /** In-memory terminal sessions (JS) — supplements Native tombstone for Desktop. */
+  const terminalSessionsJs = new Map(); // sessionId -> { reason, at }
+  const MAX_TERMINAL_SESSIONS_JS = 80;
+  const dispatchStats = {
+    unwrapCount: 0,
+    voiceDispatch: 0,
+    videoDispatch: 0,
+    replayReject: 0,
+    duplicateWrap: 0,
+    invalidOffer: 0,
+    nativeRingAuth: 0,
+  };
+
+  let secureSub = null;
+  /** Account the current secure receiver was opened for — events for any other account are dropped. */
+  let secureSubPubkey = '';
+  /** Bumped on every open/close so callbacks of a replaced receiver are ignored. */
+  let secureSubToken = 0;
+  let secureSubRetryTimer = null;
+  let secureSubRetryDelayMs = 0;
+  const SECURE_SUB_RETRY_MIN_MS = 3000;
+  const SECURE_SUB_RETRY_MAX_MS = 60000;
+  const SECURE_SUB_SOFT_FORCE_REASONS = new Set(['visibility', 'visibilitychange', 'focus', 'pageshow']);
+  let secureDispatchChain = Promise.resolve();
+  const nativeRingAuthOnce = new Set(); // signalId authorized for Native ring
+  let outgoingAnswerWatchdogTimer = null;
+  let outgoingAnswerWatchdogStartedAt = 0;
+  let outgoingAnswerWatchdogTickN = 0;
+  let webRecoveryTimer = null;
+  let webRecoveryStartedAt = 0;
+  let webRecoveryTickN = 0;
+  let webRecoveryInFlight = null;
+  const OUTGOING_ANSWER_WATCHDOG_MS = 20000;
+  const OUTGOING_ANSWER_WATCHDOG_INTERVAL_MS = 750;
+  const NATIVE_HANDOFF_REV = 2;
+
+  function relayHostname(url) {
+    try {
+      return new URL(String(url || '')).hostname || '';
+    } catch (_e) {
+      return String(url || '').replace(/^wss?:\/\//i, '').split('/')[0] || '';
+    }
+  }
+
+  function normalizeRelayUrl(url) {
+    return String(url || '').trim().replace(/\/$/, '');
+  }
+
+  /**
+   * Canonical call-signaling relay set shared with Android Native.
+   * Auth-required Gift Wrap failures are excluded for THIS session only (calls, not feed).
+   */
+  function getCallSignalRelays() {
+    const out = [];
+    const seen = new Set();
+    for (let i = 0; i < CANONICAL_CALL_RELAYS.length; i += 1) {
+      const raw = normalizeRelayUrl(CANONICAL_CALL_RELAYS[i]);
+      if (!raw || !raw.startsWith('wss://')) continue;
+      const host = relayHostname(raw);
+      if (callRelayAuthExcluded.has(raw) || (host && callRelayAuthExcluded.has(host))) continue;
+      if (seen.has(raw)) continue;
+      seen.add(raw);
+      out.push(raw);
+    }
+    return out;
+  }
+
+  /** An ACK from an auth-gated relay is not delivery: web and Native recipients do not NIP-42 read-auth. */
+  function isDeliveryGatedRelay(url) {
+    const raw = normalizeRelayUrl(url);
+    const host = relayHostname(raw);
+    return callRelayReadAuthRequired.has(raw) || callRelayWriteAuthGated.has(raw)
+      || !!(host && (callRelayReadAuthRequired.has(host) || callRelayWriteAuthGated.has(host)));
+  }
+
+  function classifyRelayPublishError(err) {
+    const msg = String((err && err.message) || err || '').toLowerCase();
+    if (msg.indexOf('auth-required') >= 0 || msg.indexOf('authenticate') >= 0 || msg.indexOf('auth required') >= 0) {
+      return 'auth-required';
+    }
+    if (msg.indexOf('timeout') >= 0) return 'timeout';
+    if (msg.indexOf('socket') >= 0 || msg.indexOf('websocket') >= 0 || msg.indexOf('ws ') >= 0) return 'socket';
+    if (msg.indexOf('rejected') >= 0 || msg.indexOf('blocked') >= 0) return 'rejected';
+    return 'other';
+  }
+
+  function markCallRelayAuthRequired(relayUrl) {
+    const raw = normalizeRelayUrl(relayUrl);
+    const host = relayHostname(raw);
+    if (raw) callRelayAuthExcluded.add(raw);
+    if (host) callRelayAuthExcluded.add(host);
+    try {
+      console.log('CALL_RELAY_AUTH_REQUIRED relay=' + (host || raw || 'unknown'));
+    } catch (_e) {}
+  }
+
+  function callSignalFail(code, detail) {
+    const err = new Error(detail ? String(code) + ': ' + String(detail) : String(code));
+    err.code = code || 'CALL_SIGNAL_E2EE_ENCRYPT_FAILED';
+    err.name = 'CallSignalE2eeError';
+    throw err;
+  }
+
+  function getNip44() {
+    const NT = window.NostrTools;
+    const nip44 = NT && NT.nip44;
+    if (!nip44 || !nip44.v2 || typeof nip44.v2.encrypt !== 'function' || typeof nip44.v2.decrypt !== 'function') {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'NIP44 unavailable');
+    }
+    const getConversationKey =
+      (nip44.v2.utils && nip44.v2.utils.getConversationKey) || nip44.getConversationKey;
+    if (typeof getConversationKey !== 'function') {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'getConversationKey missing');
+    }
+    return {
+      encrypt: nip44.v2.encrypt.bind(nip44.v2),
+      decrypt: nip44.v2.decrypt.bind(nip44.v2),
+      getConversationKey,
+    };
+  }
+
+  function hexToBytes(hex) {
+    const clean = String(hex || '').trim().toLowerCase().replace(/^0x/, '');
+    if (!/^[0-9a-f]{64}$/.test(clean)) {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'bad hex key');
+    }
+    const NT = window.NostrTools;
+    if (NT && NT.utils && typeof NT.utils.hexToBytes === 'function') {
+      return NT.utils.hexToBytes(clean);
+    }
+    if (typeof App.hexToBytes === 'function') return App.hexToBytes(clean);
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 32; i += 1) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  }
+
+  function requireHexPubkey(pk, code) {
+    if (typeof pk !== 'string' || !/^[0-9a-fA-F]{64}$/.test(pk.trim())) {
+      callSignalFail(code || 'CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'bad pubkey');
+    }
+    return pk.trim().toLowerCase();
+  }
+
+  function requirePrivBytes(hexOrBytes) {
+    if (hexOrBytes instanceof Uint8Array && hexOrBytes.length === 32) return hexOrBytes;
+    if (typeof hexOrBytes !== 'string' || !hexOrBytes.trim()) {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'empty private key');
+    }
+    const bytes = hexToBytes(hexOrBytes);
+    if (!(bytes instanceof Uint8Array) || bytes.length !== 32) {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'bad private key length');
+    }
+    return bytes;
+  }
+
+  function getFinalizeEvent() {
+    if (typeof App.finalizeEvent === 'function') return App.finalizeEvent.bind(App);
+    if (window.NostrTools && typeof window.NostrTools.finalizeEvent === 'function') {
+      return window.NostrTools.finalizeEvent;
+    }
+    callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'finalizeEvent unavailable');
+  }
+
+  function getEventHash(evt) {
+    // Clone into host realm — nostr-tools validateEvent uses realm-sensitive instanceof.
+    const host = JSON.parse(JSON.stringify(evt));
+    if (window.NostrTools && typeof window.NostrTools.getEventHash === 'function') {
+      return window.NostrTools.getEventHash(host);
+    }
+    callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'getEventHash unavailable');
+  }
+
+  function verifyEventSig(event) {
+    try {
+      const AppRef = window.NostrApp || {};
+      if (typeof AppRef.strictVerifyNostrEvent === 'function') {
+        return AppRef.strictVerifyNostrEvent(event) === true;
+      }
+      if (window.NostrEventIntegrity && typeof window.NostrEventIntegrity.strictVerifyNostrEvent === 'function') {
+        return window.NostrEventIntegrity.strictVerifyNostrEvent(event) === true;
+      }
+    } catch (_e) {}
+    return false;
+  }
+
+  function getPublicKeyFromSk(skBytes) {
+    if (window.NostrTools && typeof window.NostrTools.getPublicKey === 'function') {
+      return window.NostrTools.getPublicKey(skBytes);
+    }
+    callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'getPublicKey unavailable');
+  }
+
+  function generateEphemeralSecretKey() {
+    const NT = window.NostrTools;
+    if (NT && typeof NT.generateSecretKey === 'function') {
+      const sk = NT.generateSecretKey();
+      if (!(sk instanceof Uint8Array) || sk.length !== 32) {
+        callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'bad generated secret');
+      }
+      return sk;
+    }
+    // CSPRNG fallback — secp256k1 secret must be 32 random bytes
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const sk = new Uint8Array(32);
+      crypto.getRandomValues(sk);
+      return sk;
+    }
+    callSignalFail('BLOCKED_CRYPTO_API', 'secure key generation unavailable');
+  }
+
+  /** CSPRNG timestamp in the past (NIP-59 style), not Math.random */
+  function randomizedPastCreatedAt() {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const buf = new Uint8Array(4);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      crypto.getRandomValues(buf);
+    } else {
+      callSignalFail('BLOCKED_CRYPTO_API', 'CSPRNG unavailable for timestamp');
+    }
+    const rnd = ((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]) >>> 0;
+    const offset = rnd % TWO_DAYS_SEC;
+    return Math.max(0, nowSec - offset);
+  }
+
+  function randomHexId(bytesLen) {
+    const n = Math.max(16, bytesLen | 0); // >= 128 bits
+    const buf = new Uint8Array(n);
+    if (!(typeof crypto !== 'undefined' && crypto.getRandomValues)) {
+      callSignalFail('BLOCKED_CRYPTO_API', 'CSPRNG unavailable for id');
+    }
+    crypto.getRandomValues(buf);
+    let hex = '';
+    for (let i = 0; i < buf.length; i += 1) hex += buf[i].toString(16).padStart(2, '0');
+    return hex;
+  }
+
+  function createSessionId() {
+    return randomHexId(16);
+  }
+
+  function createSignalId() {
+    return randomHexId(16);
+  }
+
+  function nip44EncryptJson(obj, senderSkBytes, recipientPubkey) {
+    const nip44 = getNip44();
+    const recipient = requireHexPubkey(recipientPubkey);
+    const conversationKey = nip44.getConversationKey(senderSkBytes, recipient);
+    const ct = nip44.encrypt(JSON.stringify(obj), conversationKey);
+    if (typeof ct !== 'string' || !ct) {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'empty ciphertext');
+    }
+    return ct;
+  }
+
+  function nip44DecryptJson(eventLike, recipientSkBytes) {
+    const nip44 = getNip44();
+    if (!eventLike || typeof eventLike.content !== 'string' || !eventLike.pubkey) {
+      callSignalFail('CALL_SIGNAL_E2EE_DECRYPT_FAILED', 'bad decrypt target');
+    }
+    const sender = requireHexPubkey(eventLike.pubkey, 'CALL_SIGNAL_E2EE_DECRYPT_FAILED');
+    const conversationKey = nip44.getConversationKey(recipientSkBytes, sender);
+    let plain;
+    try {
+      plain = nip44.decrypt(eventLike.content, conversationKey);
+    } catch (err) {
+      callSignalFail('CALL_SIGNAL_E2EE_DECRYPT_FAILED', err && err.message ? err.message : 'decrypt failed');
+    }
+    try {
+      return JSON.parse(plain);
+    } catch (_e) {
+      callSignalFail('CALL_SIGNAL_E2EE_DECRYPT_FAILED', 'JSON invalid');
+    }
+  }
+
+  function getPTag(event) {
+    const tags = event && Array.isArray(event.tags) ? event.tags : [];
+    for (let i = 0; i < tags.length; i += 1) {
+      const t = tags[i];
+      if (Array.isArray(t) && t[0] === 'p' && typeof t[1] === 'string') return t[1].toLowerCase();
+    }
+    return '';
+  }
+
+  function rememberSignalId(signalId) {
+    if (!signalId || typeof signalId !== 'string') return false;
+    const now = Date.now();
+    if (seenSignalIds.has(signalId)) return true;
+    seenSignalIds.set(signalId, now);
+    if (seenSignalIds.size > MAX_SEEN_SIGNAL_IDS) {
+      const drop = seenSignalIds.size - MAX_SEEN_SIGNAL_IDS;
+      let i = 0;
+      for (const k of seenSignalIds.keys()) {
+        seenSignalIds.delete(k);
+        i += 1;
+        if (i >= drop) break;
+      }
+    }
+    return false;
+  }
+
+  function rememberWrapId(wrapId) {
+    if (!wrapId || typeof wrapId !== 'string') return false;
+    const now = Date.now();
+    if (seenWrapIds.has(wrapId)) return true;
+    seenWrapIds.set(wrapId, now);
+    if (seenWrapIds.size > MAX_SEEN_WRAP_IDS) {
+      const drop = seenWrapIds.size - MAX_SEEN_WRAP_IDS;
+      let i = 0;
+      for (const k of seenWrapIds.keys()) {
+        seenWrapIds.delete(k);
+        i += 1;
+        if (i >= drop) break;
+      }
+    }
+    return false;
+  }
+
+  function normalizeSessionDescription(raw) {
+    if (!raw) return null;
+    let o = raw;
+    if (typeof o === 'string') {
+      try { o = JSON.parse(o); } catch (_err) { return null; }
+    }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    if (o.offer && typeof o.offer === 'object' && !o.type && !o.sdp) o = o.offer;
+    if (o.answer && typeof o.answer === 'object' && !o.type && !o.sdp) o = o.answer;
+    const type = o.type;
+    const sdp = typeof o.sdp === 'string' ? o.sdp : '';
+    if (typeof type !== 'string' || !type || !sdp) return null;
+    if (sdp.length > MAX_SIGNAL_SDP_CHARS) return null;
+    return { type, sdp };
+  }
+
+  function cacheSecureOffer(unwrapped, offer) {
+    if (!unwrapped || !offer) return;
+    const peer = String(unwrapped.sender || '').toLowerCase();
+    if (!peer) return;
+    const sid = typeof unwrapped.sessionId === 'string' ? unwrapped.sessionId.trim() : '';
+    if (sid && isCallSessionTerminal(sid)) {
+      try { console.log('CALL_OFFER_CACHE_CLEAR session=' + sid.slice(0, 8)); } catch (_e) {}
+      return;
+    }
+    secureOfferCache.set(peer, {
+      offer,
+      media: unwrapped.media,
+      sessionId: sid,
+      wrapId: unwrapped.wrapId,
+      at: Date.now(),
+    });
+    if (secureOfferCache.size > 32) {
+      const first = secureOfferCache.keys().next().value;
+      secureOfferCache.delete(first);
+    }
+  }
+
+  function clearSecureOfferCache(sessionId, peerPubkey) {
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+    const peer = String(peerPubkey || '').toLowerCase();
+    if (sid) {
+      const entries = Array.from(secureOfferCache.entries());
+      for (let i = 0; i < entries.length; i += 1) {
+        const pk = entries[i][0];
+        const hit = entries[i][1];
+        if (hit && String(hit.sessionId || '') === sid) {
+          secureOfferCache.delete(pk);
+          try { console.log('CALL_OFFER_CACHE_CLEAR session=' + sid.slice(0, 8)); } catch (_e) {}
+        }
+      }
+    }
+    if (peer && secureOfferCache.has(peer)) {
+      secureOfferCache.delete(peer);
+      try {
+        console.log('CALL_OFFER_CACHE_CLEAR session=' + (sid ? sid.slice(0, 8) : peer.slice(0, 8)));
+      } catch (_e) {}
+    }
+  }
+
+  function getCachedSecureOffer(peerPubkey) {
+    const peer = String(peerPubkey || '').toLowerCase();
+    if (!peer) return null;
+    const hit = secureOfferCache.get(peer);
+    if (!hit) return null;
+    if (Date.now() - (hit.at || 0) > 120000) {
+      secureOfferCache.delete(peer);
+      return null;
+    }
+    const sid = hit.sessionId ? String(hit.sessionId) : '';
+    if (sid && isCallSessionTerminal(sid)) {
+      secureOfferCache.delete(peer);
+      try { console.log('CALL_OFFER_CACHE_CLEAR session=' + sid.slice(0, 8)); } catch (_e) {}
+      return null;
+    }
+    return hit;
+  }
+
+  function isCallSessionTerminal(sessionId) {
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!sid) return false;
+    if (terminalSessionsJs.has(sid)) return true;
+    return isSessionTombstoned(sid);
+  }
+
+  function markCallSessionTerminal(sessionId, reason) {
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!sid) return;
+    terminalSessionsJs.set(sid, { reason: String(reason || 'ended'), at: Date.now() });
+    if (terminalSessionsJs.size > MAX_TERMINAL_SESSIONS_JS) {
+      const first = terminalSessionsJs.keys().next().value;
+      terminalSessionsJs.delete(first);
+    }
+    try {
+      console.log('CALL_SESSION_TERMINAL session=' + sid.slice(0, 8)
+        + ' reason=' + String(reason || 'ended'));
+    } catch (_e) {}
+    markSessionTerminalFromJs(sid, 'ENDED');
+    clearSecureOfferCache(sid, '');
+  }
+
+  function isSessionTombstoned(sessionId) {
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!sid) return false;
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.isSecureCallSessionTombstoned === 'function') {
+        return !!bridge.isSecureCallSessionTombstoned(sid);
+      }
+    } catch (_e) {}
+    return false;
+  }
+
+  function authorizeNativeSecureOfferRing(unwrapped, offer) {
+    if (!unwrapped || unwrapped.action !== 'offer' || !offer) return false;
+    const sessionId = typeof unwrapped.sessionId === 'string' ? unwrapped.sessionId : '';
+    if (sessionId && isCallSessionTerminal(sessionId)) {
+      console.log('CALL_SESSION_TOMBSTONE_DROP');
+      try { console.log('CALL_WEB_RECOVERY_DROP reason=terminal-session'); } catch (_e) {}
+      return false;
+    }
+    // Ring once per authenticated session (not per outer wrap / signalId).
+    const ringKey = sessionId || unwrapped.signalId || '';
+    if (ringKey && nativeRingAuthOnce.has(ringKey)) {
+      console.log('CALL_SESSION_TOMBSTONE_DROP');
+      return false;
+    }
+    if (ringKey) {
+      nativeRingAuthOnce.add(ringKey);
+      if (nativeRingAuthOnce.size > 200) {
+        const first = nativeRingAuthOnce.values().next().value;
+        nativeRingAuthOnce.delete(first);
+      }
+    }
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.notifySecureCallOfferVerified === 'function') {
+        bridge.notifySecureCallOfferVerified(unwrapped.sender, unwrapped.media, sessionId || '');
+      }
+      if (bridge && typeof bridge.cacheIncomingCallOffer === 'function') {
+        bridge.cacheIncomingCallOffer(unwrapped.sender, unwrapped.media, JSON.stringify(offer));
+      }
+    } catch (_e) {}
+    dispatchStats.nativeRingAuth += 1;
+    console.log('CALL_RING_AUTH_ONCE');
+    return true;
+  }
+
+  function markSessionTerminalFromJs(sessionId, state) {
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!sid) return;
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.markSecureCallSessionTerminal === 'function') {
+        bridge.markSecureCallSessionTerminal(sid, state || 'ENDED');
+      }
+    } catch (_e) {}
+  }
+
+  function requestVerifyOnlyIdleShutdown() {
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.requestVerifyOnlyIdleShutdown === 'function') {
+        bridge.requestVerifyOnlyIdleShutdown();
+      }
+    } catch (_e) {}
+  }
+
+  function shouldDropOldSessionDisconnect(activeSessionId, incomingSessionId, tombstoned) {
+    const sid = typeof incomingSessionId === 'string' ? incomingSessionId : '';
+    const active = typeof activeSessionId === 'string' ? activeSessionId : '';
+    if (tombstoned) return true;
+    return !!(active && sid && active !== sid);
+  }
+
+  function activeCallSessionId(media) {
+    try {
+      if (media === 'voice' && App.voiceCall && typeof App.voiceCall.getState === 'function') {
+        const st = App.voiceCall.getState();
+        return st && st.callSessionId ? String(st.callSessionId) : '';
+      }
+      if (media === 'video' && App.videoCall && typeof App.videoCall.getState === 'function') {
+        const st = App.videoCall.getState();
+        return st && st.callSessionId ? String(st.callSessionId) : '';
+      }
+    } catch (_e) {}
+    return '';
+  }
+
+  function routeSecureSignal(unwrapped) {
+    const logical = {
+      sender: unwrapped.sender,
+      recipient: unwrapped.recipient,
+      media: unwrapped.media,
+      action: unwrapped.action,
+      wireType: unwrapped.wireType,
+      sessionId: unwrapped.sessionId,
+      signalId: unwrapped.signalId,
+      sentAt: unwrapped.sentAt,
+      data: unwrapped.data,
+      wrapId: unwrapped.wrapId,
+    };
+    if (unwrapped.media === 'voice') {
+      dispatchStats.voiceDispatch += 1;
+      const vc = App.voiceCall;
+      if (vc && typeof vc.handleSecureSignal === 'function') {
+        return Promise.resolve(vc.handleSecureSignal(logical));
+      }
+      return Promise.resolve(false);
+    }
+    if (unwrapped.media === 'video') {
+      dispatchStats.videoDispatch += 1;
+      const vc = App.videoCall;
+      if (vc && typeof vc.handleSecureSignal === 'function') {
+        return Promise.resolve(vc.handleSecureSignal(logical));
+      }
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(false);
+  }
+
+  /**
+   * Authoritative single-consume secure 1059 path.
+   * Unwrap once → claim replay → validate offer SDP before Native ring → route by media.
+   */
+  function isFullCallRuntimeReady() {
+    // Minimal verifier must not ACK ICE candidates; full videos.html / So-Call runtime may.
+    if (App.__sosSecureVerifierOnly) return false;
+    try {
+      if (App.voiceCall && typeof App.voiceCall.handleSecureSignal === 'function') return true;
+      if (App.videoCall && typeof App.videoCall.handleSecureSignal === 'function') return true;
+    } catch (_e) {}
+    return false;
+  }
+
+  function shouldMarkSecureWrapHandled(result) {
+    if (!result || typeof result !== 'object') return false;
+    const status = String(result.status || '');
+    if (status === 'pending_candidate') return false;
+    if (status === 'dispatched' || status === 'duplicate' || status === 'invalid_offer') return true;
+    if (status === 'reject') {
+      const reason = String(result.reason || '');
+      // Deterministic outcomes after keys were present / schema fail.
+      // Do NOT mark for no_keys / exception (temporary — pending must remain recoverable).
+      return reason === 'not_wrap' || reason === 'unwrap';
+    }
+    return false;
+  }
+
+  function shouldRequeueSecureWrap(result) {
+    if (!result || typeof result !== 'object') return false;
+    if (String(result.status || '') === 'pending_candidate') return false;
+    if (String(result.status || '') !== 'reject') return false;
+    const reason = String(result.reason || '');
+    return reason === 'no_keys' || reason === 'exception' || reason === 'chain';
+  }
+
+  function ackSecureWrapHandledToNative(wrapId) {
+    const id = typeof wrapId === 'string' ? wrapId.trim() : '';
+    if (!id) return;
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.ackSecureWrapHandled === 'function') {
+        bridge.ackSecureWrapHandled(id);
+      }
+    } catch (_e) {}
+  }
+
+  function requeueSecureWrapToNative(ev) {
+    if (!ev) return;
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.requeueSecureWrap === 'function') {
+        bridge.requeueSecureWrap(JSON.stringify(ev));
+      }
+    } catch (_e) {}
+  }
+
+  async function dispatchGiftWrappedCallSignal(wrapEvent, _opts) {
+    let wrapId = '';
+    try {
+      if (!wrapEvent || wrapEvent.kind !== GIFT_WRAP_KIND) {
+        return { status: 'reject', reason: 'not_wrap' };
+      }
+      wrapId = typeof wrapEvent.id === 'string' ? wrapEvent.id : '';
+      if (wrapId && rememberWrapId(wrapId)) {
+        dispatchStats.duplicateWrap += 1;
+        ackSecureWrapHandledToNative(wrapId);
+        return { status: 'duplicate', reason: 'wrap_id' };
+      }
+      if (!App.SosCryptoSigner?.hasIdentityKey() || !App.publicKey) {
+        if (wrapId) seenWrapIds.delete(wrapId);
+        return { status: 'reject', reason: 'no_keys' };
+      }
+      dispatchStats.unwrapCount += 1;
+      let unwrapped = null;
+      if (App.SosCryptoSigner.isWorkerAuthoritative && App.SosCryptoSigner.isWorkerAuthoritative()) {
+        try {
+          const logical = await App.SosCryptoSigner.unwrapCallGiftwrap(wrapEvent, App.publicKey);
+          const valid = logical ? validatePayload({
+            family: logical.family,
+            v: logical.v,
+            media: logical.media,
+            action: logical.action,
+            sessionId: logical.sessionId,
+            signalId: logical.signalId,
+            sender: logical.sender,
+            recipient: logical.recipient,
+            sentAt: logical.sentAt,
+            data: logical.data,
+          }, App.publicKey) : null;
+          const sealPk = logical && typeof logical.sealPubkey === 'string' ? logical.sealPubkey.toLowerCase() : '';
+          if (valid && sealPk && valid.sender === sealPk) {
+            unwrapped = {
+              media: valid.media,
+              action: valid.action,
+              wireType: toWireType(valid.media, valid.action),
+              data: valid.data,
+              sender: valid.sender,
+              recipient: valid.recipient,
+              sessionId: valid.sessionId,
+              signalId: valid.signalId,
+              sentAt: valid.sentAt,
+              wrapId: logical.wrapId || wrapId,
+            };
+            if (rememberSignalId(unwrapped.signalId)) {
+              unwrapped = null; // replay
+            }
+          } else if (logical) {
+            try { console.log('CALL_SIGNAL_REJECT worker_payload_invalid'); } catch (_e) {}
+          }
+        } catch (_e) {
+          unwrapped = null;
+        }
+      } else {
+        unwrapped = await unwrapGiftWrappedCallSignal(
+          wrapEvent,
+          App.SosCryptoSigner.f1CryptoModuleSessionKeyHex(),
+          App.publicKey,
+        );
+      }
+      if (!unwrapped) {
+        // unwrap already claimed signalId on success; failure may be replay
+        dispatchStats.replayReject += 1;
+        ackSecureWrapHandledToNative(wrapId);
+        return { status: 'reject', reason: 'unwrap' };
+      }
+
+      if (unwrapped.action === 'disconnect') {
+        const sid = typeof unwrapped.sessionId === 'string' ? unwrapped.sessionId : '';
+        const active = activeCallSessionId(unwrapped.media);
+        const tombstoned = !!(sid && isSessionTombstoned(sid));
+        const mismatch = shouldDropOldSessionDisconnect(active, sid, tombstoned);
+        if (tombstoned || mismatch) {
+          try { console.log('CALL_OLD_SESSION_DISCONNECT_DROP'); } catch (_e) {}
+          if (sid && mismatch && !tombstoned) markSessionTerminalFromJs(sid, 'ENDED');
+          ackSecureWrapHandledToNative(wrapId);
+          return { status: 'dispatched', media: unwrapped.media, action: 'old_session_drop' };
+        }
+        try {
+          const bridge = window.SosNativeShell;
+          if (bridge && typeof bridge.notifySecureCallDismissed === 'function') {
+            bridge.notifySecureCallDismissed(unwrapped.sender);
+          }
+        } catch (_e) {}
+        markSessionTerminalFromJs(sid, 'ENDED');
+        try { console.log('SECURE_VERIFIER_DISCONNECT'); } catch (_e) {}
+        await routeSecureSignal(unwrapped);
+        ackSecureWrapHandledToNative(wrapId);
+        return { status: 'dispatched', media: unwrapped.media, action: unwrapped.action };
+      }
+
+      if (unwrapped.action === 'offer') {
+        if (isCallSessionTerminal(unwrapped.sessionId)) {
+          console.log('CALL_SESSION_TOMBSTONE_DROP');
+          try { console.log('CALL_WEB_RECOVERY_DROP reason=terminal-session'); } catch (_e) {}
+          try { console.log('CALL_NATIVE_PENDING_DROP reason=terminal-session'); } catch (_e2) {}
+          ackSecureWrapHandledToNative(wrapId);
+          return { status: 'dispatched', media: unwrapped.media, action: 'tombstone_drop' };
+        }
+        const offer = normalizeSessionDescription(unwrapped.data);
+        if (!offer) {
+          dispatchStats.invalidOffer += 1;
+          // signalId already claimed — do NOT ring
+          ackSecureWrapHandledToNative(wrapId);
+          return { status: 'invalid_offer', media: unwrapped.media };
+        }
+        unwrapped.data = offer;
+        cacheSecureOffer(unwrapped, offer);
+        authorizeNativeSecureOfferRing(unwrapped, offer);
+        try { console.log('SECURE_VERIFIER_OFFER_AUTH_OK'); } catch (_e) {}
+      } else if (unwrapped.sessionId && isCallSessionTerminal(unwrapped.sessionId)) {
+        console.log('CALL_SESSION_TOMBSTONE_DROP');
+        try { console.log('CALL_WEB_RECOVERY_DROP reason=terminal-session'); } catch (_e) {}
+        try { console.log('CALL_NATIVE_PENDING_DROP reason=terminal-session'); } catch (_e2) {}
+        ackSecureWrapHandledToNative(wrapId);
+        return { status: 'dispatched', media: unwrapped.media, action: 'tombstone_drop' };
+      }
+
+      // PART F: keep ICE candidate wraps pending until full WebRTC runtime consumes them.
+      if (
+        (unwrapped.action === 'candidate' || unwrapped.action === 'candidates') &&
+        !isFullCallRuntimeReady()
+      ) {
+        if (wrapId) {
+          try { seenWrapIds.delete(wrapId); } catch (_e) {}
+        }
+        try { console.log('SECURE_VERIFIER_CANDIDATE_PENDING'); } catch (_e) {}
+        return { status: 'pending_candidate', media: unwrapped.media, action: unwrapped.action };
+      }
+
+      await routeSecureSignal(unwrapped);
+      try { console.log('CALL_SECURE_SIGNAL_DISPATCH action=' + String(unwrapped.action || '')); } catch (_e) {}
+      ackSecureWrapHandledToNative(wrapId);
+      return { status: 'dispatched', media: unwrapped.media, action: unwrapped.action, signalId: unwrapped.signalId };
+    } catch (_err) {
+      if (wrapId) {
+        try { seenWrapIds.delete(wrapId); } catch (_e) {}
+      }
+      return { status: 'reject', reason: 'exception' };
+    }
+  }
+
+  function enqueueSecureDispatch(wrapEvent) {
+    secureDispatchChain = secureDispatchChain
+      .then(async () => {
+        const result = await dispatchGiftWrappedCallSignal(wrapEvent);
+        // Live path already acks inside dispatch on terminal statuses.
+        return result;
+      })
+      .catch(() => ({ status: 'reject', reason: 'chain' }));
+    return secureDispatchChain;
+  }
+
+  function currentAccountPubkey() {
+    const pk = String(App.publicKey || '').toLowerCase();
+    return /^[0-9a-f]{64}$/.test(pk) ? pk : '';
+  }
+
+  function clearSecureSubRetry() {
+    if (secureSubRetryTimer) {
+      clearTimeout(secureSubRetryTimer);
+      secureSubRetryTimer = null;
+    }
+  }
+
+  function closeSecureCallSubscription(reason) {
+    const sub = secureSub;
+    secureSubToken += 1;
+    secureSub = null;
+    secureSubHealthy = false;
+    secureSubPubkey = '';
+    if (!sub) return false;
+    try {
+      if (typeof sub.close === 'function') sub.close();
+      else if (typeof sub.unsub === 'function') sub.unsub();
+    } catch (_e) {}
+    try { console.log('CALL_SECURE_SUBSCRIBE_CLOSED reason=' + String(reason || 'close')); } catch (_e2) {}
+    return true;
+  }
+
+  /** Unknown or connecting socket state counts as alive; only a pool that reports every call relay closed is "dead". */
+  function anyCallRelaySocketOpen() {
+    try {
+      const relays = App.pool && App.pool.relays;
+      if (!relays || typeof relays.get !== 'function') return true;
+      let known = 0;
+      const urls = getCallSignalRelays();
+      for (let i = 0; i < urls.length; i += 1) {
+        const r = relays.get(urls[i]) || relays.get(String(urls[i]).replace(/\/$/, '') + '/');
+        if (!r) continue;
+        if (r.ws && typeof r.ws.readyState === 'number') {
+          known += 1;
+          if (r.ws.readyState === 0 || r.ws.readyState === 1) return true;
+        }
+      }
+      return known === 0;
+    } catch (_e) {
+      return true;
+    }
+  }
+
+  function isSecureCallReceiverReady() {
+    const me = currentAccountPubkey();
+    return !!(secureSub && secureSubHealthy && me && secureSubPubkey === me && anyCallRelaySocketOpen());
+  }
+
+  function scheduleSecureSubRetry(reason) {
+    if (secureSubRetryTimer) return;
+    secureSubRetryDelayMs = secureSubRetryDelayMs
+      ? Math.min(SECURE_SUB_RETRY_MAX_MS, secureSubRetryDelayMs * 2)
+      : SECURE_SUB_RETRY_MIN_MS;
+    try {
+      console.log('CALL_SECURE_SUBSCRIBE_RETRY_SCHEDULED reason=' + String(reason || 'closed') + ' ms=' + secureSubRetryDelayMs);
+    } catch (_e) {}
+    secureSubRetryTimer = setTimeout(() => {
+      secureSubRetryTimer = null;
+      if (isSecureCallReceiverReady()) return;
+      try { ensureSecureCallSubscription({ reason: 'retry' }); } catch (_e) {}
+    }, secureSubRetryDelayMs);
+  }
+
+  function ensureSecureCallSubscription(options) {
+    options = options || {};
+    const me = currentAccountPubkey();
+    if (App.guestMode || !me) {
+      if (secureSub) closeSecureCallSubscription(App.guestMode ? 'guest' : 'no-identity');
+      clearSecureSubRetry();
+      return null;
+    }
+    if (secureSub && secureSubPubkey !== me) {
+      closeSecureCallSubscription('identity-changed');
+    }
+    if (!App.pool) return null;
+    const reason = String(options.reason || (options.force ? 'force' : 'ensure'));
+    const ready = isSecureCallReceiverReady();
+    if (ready && (!options.force || SECURE_SUB_SOFT_FORCE_REASONS.has(reason))) {
+      if (options.force) {
+        try { console.log('CALL_SECURE_SUBSCRIBE_KEEP reason=' + reason); } catch (_e) {}
+      }
+      return secureSub;
+    }
+    // Opened but EOSE not seen yet: still converging, do not stack a second receiver.
+    if (secureSub && !secureSubHealthy && !options.force && anyCallRelaySocketOpen()) return secureSub;
+    if (options.force && secureSub && Date.now() - lastForcedSubscribeAt < FORCED_SUBSCRIBE_COALESCE_MS) {
+      try { console.log('CALL_SECURE_SUBSCRIBE_COALESCED reason=' + reason); } catch (_e) {}
+      return secureSub;
+    }
+    if (options.force) lastForcedSubscribeAt = Date.now();
+    if (secureSub) {
+      closeSecureCallSubscription(reason);
+      try {
+        console.log('CALL_SECURE_SUBSCRIBE_RECONNECT reason=' + reason);
+      } catch (_e2) {}
+    }
+    const callRelays = getCallSignalRelays();
+    const filters = [
+      {
+        kinds: [GIFT_WRAP_KIND],
+        '#p': [me],
+        since: Math.floor(Date.now() / 1000) - TWO_DAYS_SEC - 120,
+      },
+    ];
+    try {
+      console.log('CALL_SECURE_SUBSCRIBE kind=1059');
+      console.log('CALL_SECURE_SUBSCRIBE_START relays=' + callRelays.length);
+      secureSubToken += 1;
+      const token = secureSubToken;
+      secureSubHealthy = false;
+      secureSubPubkey = me;
+      const sub = App.pool.subscribeMany(callRelays, filters, {
+        onevent: (ev) => {
+          if (token !== secureSubToken) return;
+          if (!ev || ev.kind !== GIFT_WRAP_KIND) return;
+          if (!verifyEventSig(ev)) return;
+          const p = getPTag(ev);
+          if (p !== me || p !== currentAccountPubkey()) return;
+          enqueueSecureDispatch(ev);
+        },
+        onclose: () => {
+          if (token !== secureSubToken) return;
+          secureSubToken += 1;
+          secureSub = null;
+          secureSubHealthy = false;
+          secureSubPubkey = '';
+          try { console.log('CALL_SECURE_SUBSCRIBE_DEAD'); } catch (_e) {}
+          if (currentAccountPubkey() && !App.guestMode) scheduleSecureSubRetry('closed');
+        },
+        oneose: () => {
+          if (token !== secureSubToken) return;
+          secureSubHealthy = true;
+          secureSubRetryDelayMs = 0;
+          clearSecureSubRetry();
+          console.log('CALL_SECURE_SUBSCRIBE_EOSE');
+          console.log('CALL_SECURE_SUBSCRIBE_READY');
+          try { console.log('CALL_RECEIVE_READY=true'); } catch (_e0) {}
+          try { reconcilePendingSecureCallSignals('subscribe-ready'); } catch (_e) {}
+          try { runWebSecureCallRecovery('subscribe-ready'); } catch (_e2) {}
+        },
+      });
+      if (token === secureSubToken) secureSub = sub;
+      for (let i = 0; i < callRelays.length; i += 1) {
+        try {
+          console.log('CALL_SECURE_SUBSCRIBE_RELAY_READY relay=' + relayHostname(callRelays[i]));
+        } catch (_e) {}
+      }
+      return secureSub;
+    } catch (_err) {
+      secureSub = null;
+      secureSubPubkey = '';
+      try {
+        console.log('CALL_SECURE_SUBSCRIBE_ERROR relay=all reason=subscribe-failed');
+      } catch (_e) {}
+      console.warn('CALL_SECURE_SUBSCRIBE_FAILED');
+      scheduleSecureSubRetry('subscribe-failed');
+      return null;
+    }
+  }
+
+  /** Identity became ready, changed, or was cleared — converge the single shared receiver. */
+  function notifyCallIdentityReady(reason) {
+    try {
+      const why = String(reason || 'identity');
+      if (App.guestMode || !currentAccountPubkey()) {
+        closeSecureCallSubscription('identity-cleared:' + why);
+        clearSecureSubRetry();
+        return null;
+      }
+      return ensureSecureCallSubscription({ reason: 'identity-ready' });
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  /** Drain Native pending queue into the same authoritative dispatcher. */
+  async function drainPendingSecureWrapsFromNative(pendingList) {
+    const items = Array.isArray(pendingList) ? pendingList : [];
+    const results = [];
+    let anyRingAuth = false;
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      let ev = null;
+      try {
+        if (item && item.event) {
+          ev = typeof item.event === 'string' ? JSON.parse(item.event) : item.event;
+        } else if (item && item.kind === GIFT_WRAP_KIND) {
+          ev = item;
+        }
+      } catch (_e) {
+        continue;
+      }
+      if (!ev) continue;
+      const beforeAuth = dispatchStats.nativeRingAuth;
+      const result = await dispatchGiftWrappedCallSignal(ev);
+      results.push(result);
+      if (dispatchStats.nativeRingAuth > beforeAuth) anyRingAuth = true;
+      const status = result && result.status ? String(result.status) : '';
+      const action = result && result.action ? String(result.action) : '';
+      if (status === 'duplicate') {
+        try { console.log('CALL_NATIVE_PENDING_DUPLICATE'); } catch (_e) {}
+      } else if (status === 'dispatched' || status === 'invalid_offer' || status === 'pending_candidate') {
+        try {
+          console.log('CALL_NATIVE_PENDING_DISPATCH action=' + (action || status));
+        } catch (_e) {}
+      }
+      // Temporary failures: restore encrypted wrap so process restart can recover.
+      if (shouldRequeueSecureWrap(result)) {
+        requeueSecureWrapToNative(ev);
+      }
+    }
+    // Backlog / verify-only: no fresh ring → release background WebView ownership.
+    if (!anyRingAuth && items.length > 0) {
+      setTimeout(() => requestVerifyOnlyIdleShutdown(), 1500);
+    }
+    return results;
+  }
+
+  let pendingSecureReconcileInFlight = null;
+  let pendingSecureReconcileQueued = false;
+
+  function parseNativeSecurePendingQueue(raw) {
+    const out = [];
+    if (!raw) return out;
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (Array.isArray(parsed)) {
+        for (let i = 0; i < parsed.length; i += 1) out.push(parsed[i]);
+        return out;
+      }
+      if (parsed && parsed.event) {
+        out.push(parsed);
+        return out;
+      }
+      if (parsed && parsed.kind === GIFT_WRAP_KIND) {
+        out.push(parsed);
+        return out;
+      }
+    } catch (_e) {}
+    return out;
+  }
+
+  function peekNativePendingSecureWraps() {
+    let items = [];
+    let bridgeCount = -1;
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.peekPendingSecureWrapCount === 'function') {
+        bridgeCount = Number(bridge.peekPendingSecureWrapCount()) || 0;
+      }
+      if (bridge && typeof bridge.peekPendingSecureWraps === 'function') {
+        items = parseNativeSecurePendingQueue(bridge.peekPendingSecureWraps());
+      } else if (bridge && typeof bridge.drainPendingSecureWraps === 'function') {
+        items = parseNativeSecurePendingQueue(bridge.drainPendingSecureWraps());
+      } else if (bridge && typeof bridge.getIncomingCallRawEvent === 'function') {
+        items = parseNativeSecurePendingQueue(bridge.getIncomingCallRawEvent());
+      }
+    } catch (_e) {}
+    return { items, bridgeCount };
+  }
+
+  /**
+   * Idempotent Native→Web secure-call handoff.
+   * Peek encrypted pending wraps → same dispatcher → per-wrap ACK.
+   * Ownership is identity-safe: never leave a settled Promise stuck in
+   * pendingSecureReconcileInFlight (sync empty/not-ready paths used to).
+   */
+  async function reconcilePendingSecureCallSignals(reason, optionalQueue) {
+    const why = String(reason || 'unknown');
+    if (pendingSecureReconcileInFlight) {
+      pendingSecureReconcileQueued = true;
+      return pendingSecureReconcileInFlight;
+    }
+    const run = (async () => {
+      if (!App.SosCryptoSigner?.hasIdentityKey() || !App.publicKey) {
+        try { console.log('CALL_NATIVE_PENDING_DRAIN_DEFER reason=not-ready'); } catch (_e) {}
+        return { deferred: true, reason: 'not-ready' };
+      }
+      if (typeof dispatchGiftWrappedCallSignal !== 'function') {
+        try { console.log('CALL_NATIVE_PENDING_DRAIN_DEFER reason=not-ready'); } catch (_e) {}
+        return { deferred: true, reason: 'not-ready' };
+      }
+
+      let items = parseNativeSecurePendingQueue(optionalQueue);
+      let bridgeCount = -1;
+      if (!items.length) {
+        const peeked = peekNativePendingSecureWraps();
+        items = peeked.items;
+        bridgeCount = peeked.bridgeCount;
+      } else {
+        try {
+          const bridge = window.SosNativeShell;
+          if (bridge && typeof bridge.peekPendingSecureWrapCount === 'function') {
+            bridgeCount = Number(bridge.peekPendingSecureWrapCount()) || 0;
+          }
+        } catch (_e) {}
+      }
+
+      try {
+        console.log('CALL_NATIVE_PENDING_PEEK reason=' + why + ' count=' + items.length);
+      } catch (_e) {}
+      if (bridgeCount > 0 && items.length === 0) {
+        try {
+          console.log('CALL_NATIVE_PENDING_QUEUE_MISMATCH reason=' + why
+            + ' bridgeCount=' + bridgeCount + ' parsedCount=0');
+        } catch (_e) {}
+      }
+      if (!items.length) return { empty: true, reason: why, count: 0 };
+
+      try {
+        console.log('CALL_NATIVE_PENDING_DRAIN_START reason=' + why + ' count=' + items.length);
+      } catch (_e) {}
+
+      const results = await drainPendingSecureWrapsFromNative(items);
+      let handled = 0;
+      for (let i = 0; i < results.length; i += 1) {
+        const r = results[i];
+        if (!r) continue;
+        const st = String(r.status || '');
+        if (st === 'dispatched' || st === 'duplicate' || st === 'invalid_offer') handled += 1;
+      }
+      let remaining = 0;
+      try {
+        const peeked = peekNativePendingSecureWraps();
+        remaining = peeked.items.length;
+      } catch (_e) {}
+      try {
+        console.log('CALL_NATIVE_PENDING_DRAIN_OK handled=' + handled + ' remaining=' + remaining);
+      } catch (_e) {}
+      return { ok: true, handled, remaining, reason: why, results };
+    })();
+
+    pendingSecureReconcileInFlight = run;
+    try {
+      return await run;
+    } finally {
+      if (pendingSecureReconcileInFlight === run) {
+        pendingSecureReconcileInFlight = null;
+      }
+      if (pendingSecureReconcileQueued) {
+        pendingSecureReconcileQueued = false;
+        setTimeout(() => {
+          try { reconcilePendingSecureCallSignals('coalesce'); } catch (_e) {}
+        }, 0);
+      }
+    }
+  }
+
+  function getCallSignalReadRelays() {
+    let relays = getCallSignalRelays().filter((u) => {
+      const host = relayHostname(u);
+      return !callRelayReadAuthRequired.has(u) && !(host && callRelayReadAuthRequired.has(host));
+    });
+    const health = App.RelayHealth;
+    if (health && typeof health.select === 'function') relays = health.select(relays);
+    return relays;
+  }
+
+  /** One-shot per-relay read; marks relays that CLOSE the #p read with auth-required. */
+  function queryOneCallRelay(pool, url, filter) {
+    return new Promise((resolve) => {
+      const collected = [];
+      let done = false;
+      let sub = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try { if (sub && typeof sub.close === 'function') sub.close(); } catch (_e) {}
+        resolve(collected);
+      };
+      const timer = setTimeout(finish, 3500);
+      pool.ensureRelay(url, { connectionTimeout: CALL_RELAY_CONNECT_TIMEOUT_MS }).then((relay) => {
+        if (done) return;
+        sub = relay.subscribe([filter], {
+          onevent: (ev) => { if (ev) collected.push(ev); },
+          oneose: () => { clearTimeout(timer); finish(); },
+          onclose: (reason) => {
+            if (classifyRelayPublishError(reason) === 'auth-required') {
+              const host = relayHostname(url);
+              callRelayReadAuthRequired.add(normalizeRelayUrl(url));
+              if (host) callRelayReadAuthRequired.add(host);
+              try { console.log('CALL_RELAY_READ_AUTH_REQUIRED relay=' + (host || 'unknown')); } catch (_e) {}
+            }
+            clearTimeout(timer);
+            finish();
+          },
+        });
+      }, (err) => {
+        const health = App.RelayHealth;
+        if (health) health.record(url, false, 0, classifyRelayPublishError(err));
+        clearTimeout(timer);
+        finish();
+      });
+    });
+  }
+
+  async function querySecureCallWrapsFromRelays() {
+    const pool = App.pool;
+    const relays = getCallSignalReadRelays();
+    if (!pool || !App.publicKey || !relays.length) return [];
+    const filter = {
+      kinds: [GIFT_WRAP_KIND],
+      '#p': [App.publicKey],
+      since: Math.floor(Date.now() / 1000) - TWO_DAYS_SEC - 120,
+      limit: WEB_RECOVERY_QUERY_LIMIT,
+    };
+    try {
+      console.log('CALL_WEB_RECOVERY_QUERY relays=' + relays.length);
+    } catch (_e) {}
+    let events = [];
+    try {
+      if (typeof pool.ensureRelay === 'function') {
+        const lists = await Promise.all(relays.map((u) => queryOneCallRelay(pool, u, filter)));
+        const byId = new Map();
+        lists.forEach((l) => l.forEach((ev) => { if (ev && ev.id && !byId.has(ev.id)) byId.set(ev.id, ev); }));
+        events = Array.from(byId.values());
+      } else if (typeof pool.querySync === 'function') {
+        const res = await pool.querySync(relays, filter);
+        if (Array.isArray(res)) events = res;
+      } else if (typeof pool.list === 'function') {
+        const res = await pool.list(relays, [filter]);
+        if (Array.isArray(res)) events = res;
+      } else {
+        events = await new Promise((resolve) => {
+          const collected = [];
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            try {
+              if (sub && typeof sub.close === 'function') sub.close();
+              else if (sub && typeof sub.unsub === 'function') sub.unsub();
+            } catch (_e) {}
+            resolve(collected);
+          };
+          let sub = null;
+          try {
+            sub = pool.subscribeMany(relays, [filter], {
+              onevent: (ev) => {
+                if (ev) collected.push(ev);
+              },
+              oneose: () => finish(),
+            });
+          } catch (_e) {
+            finish();
+            return;
+          }
+          setTimeout(finish, 2500);
+        });
+      }
+    } catch (err) {
+      try {
+        console.log('CALL_WEB_RECOVERY_ERROR reason=' + classifyRelayPublishError(err));
+      } catch (_e) {}
+      return [];
+    }
+    return Array.isArray(events) ? events : [];
+  }
+
+  /**
+   * Desktop/Web catch-up: pull kind-1059 addressed to local pubkey from call relays
+   * and feed the SAME dispatcher. Outer created_at may be randomized up to ~2 days.
+   * Identity-safe inFlight ownership (same class of bug as Native reconcile).
+   */
+  async function runWebSecureCallRecovery(reason) {
+    const why = String(reason || 'unknown');
+    // Smallest safe defer: while autoAccept is applying an already-cached current-session
+    // offer, skip heavy relay catch-up so accept SDP path is not delayed by 30+ dispatches.
+    try {
+      const acceptPeer = String(window.__sosAcceptInFlightPeer || '').toLowerCase();
+      if (window.__sosAcceptInFlight && /^[0-9a-f]{64}$/.test(acceptPeer)) {
+        const cached = typeof getCachedSecureOffer === 'function' ? getCachedSecureOffer(acceptPeer) : null;
+        if (cached && cached.offer && cached.offer.type && cached.offer.sdp) {
+          try {
+            console.log('CALL_WEB_RECOVERY_DEFER reason=accept-in-flight peer=' + acceptPeer.slice(0, 8));
+          } catch (_e) {}
+          return { deferred: true, reason: 'accept-in-flight' };
+        }
+      }
+    } catch (_e) {}
+    // Native-first while outgoing call awaits answer: do not start another 48-event
+    // historical recovery pass when Native already has pending wraps.
+    try {
+      const outgoingAwait = why === 'outgoing-await-answer' || !!outgoingAnswerWatchdogTimer;
+      if (outgoingAwait) {
+        const peeked = peekNativePendingSecureWraps();
+        const n = (peeked.items && peeked.items.length) || 0;
+        const bc = Number(peeked.bridgeCount) || 0;
+        if (n > 0 || bc > 0) {
+          try {
+            console.log('CALL_WEB_RECOVERY_DEFER reason=native-pending-priority count='
+              + Math.max(n, bc));
+          } catch (_e) {}
+          try { reconcilePendingSecureCallSignals('native-priority'); } catch (_e2) {}
+          return { deferred: true, reason: 'native-pending-priority' };
+        }
+      }
+    } catch (_e) {}
+    if (webRecoveryInFlight) {
+      return webRecoveryInFlight;
+    }
+    const run = (async () => {
+      if (!App.SosCryptoSigner?.hasIdentityKey() || !App.publicKey || !App.pool) {
+        try { console.log('CALL_WEB_RECOVERY_ERROR reason=not-ready'); } catch (_e) {}
+        return { deferred: true, reason: 'not-ready' };
+      }
+      const events = await querySecureCallWrapsFromRelays();
+      try {
+        console.log('CALL_WEB_RECOVERY_RESULT events=' + events.length);
+      } catch (_e) {}
+      if (!events.length) {
+        try { console.log('CALL_WEB_RECOVERY_EMPTY'); } catch (_e2) {}
+        return { empty: true, reason: why, count: 0 };
+      }
+      // Re-check Native before enqueueing a historical backlog.
+      try {
+        const outgoingAwait = why === 'outgoing-await-answer' || !!outgoingAnswerWatchdogTimer;
+        if (outgoingAwait) {
+          const peeked = peekNativePendingSecureWraps();
+          const n = (peeked.items && peeked.items.length) || 0;
+          const bc = Number(peeked.bridgeCount) || 0;
+          if (n > 0 || bc > 0) {
+            try {
+              console.log('CALL_WEB_RECOVERY_DEFER reason=native-pending-priority count='
+                + Math.max(n, bc));
+            } catch (_e) {}
+            try { await reconcilePendingSecureCallSignals('native-priority'); } catch (_e2) {}
+            return { deferred: true, reason: 'native-pending-priority', count: events.length };
+          }
+        }
+      } catch (_e) {}
+      let dispatched = 0;
+      let skippedKnown = 0;
+      for (let i = 0; i < events.length; i += 1) {
+        const ev = events[i];
+        if (!ev || ev.kind !== GIFT_WRAP_KIND) continue;
+        const wrapId = typeof ev.id === 'string' ? ev.id : '';
+        // Skip already-seen outer wrap IDs before enqueue — avoids starving the
+        // serialized dispatch chain with historical CALL_WEB_RECOVERY_DISPATCH duplicate.
+        if (wrapId && seenWrapIds.has(wrapId)) {
+          skippedKnown += 1;
+          continue;
+        }
+        if (!verifyEventSig(ev)) continue;
+        if (getPTag(ev) !== String(App.publicKey || '').toLowerCase()) continue;
+        try {
+          const result = await enqueueSecureDispatch(ev);
+          const action = result && result.action ? String(result.action) : '';
+          const status = result && result.status ? String(result.status) : '';
+          if (status === 'dispatched' || status === 'duplicate' || status === 'invalid_offer' || status === 'pending_candidate') {
+            try {
+              console.log('CALL_WEB_RECOVERY_DISPATCH action=' + (action || status));
+            } catch (_e) {}
+            dispatched += 1;
+          }
+        } catch (_e) {}
+      }
+      if (skippedKnown > 0) {
+        try {
+          console.log('CALL_WEB_RECOVERY_SKIP_KNOWN n=' + skippedKnown);
+        } catch (_e) {}
+      }
+      return { ok: true, reason: why, count: events.length, dispatched, skippedKnown };
+    })();
+
+    webRecoveryInFlight = run;
+    try {
+      return await run;
+    } finally {
+      if (webRecoveryInFlight === run) {
+        webRecoveryInFlight = null;
+      }
+    }
+  }
+
+  function stopWebSecureCallRecovery(reason) {
+    if (!webRecoveryTimer && !webRecoveryStartedAt) return;
+    try { clearTimeout(webRecoveryTimer); } catch (_e) {}
+    webRecoveryTimer = null;
+    webRecoveryStartedAt = 0;
+    webRecoveryTickN = 0;
+    try {
+      console.log('CALL_WEB_RECOVERY_STOP reason=' + String(reason || 'done'));
+    } catch (_e) {}
+  }
+
+  function startWebSecureCallRecovery(options) {
+    const opts = options || {};
+    const why = String(opts.reason || 'outgoing-await-answer');
+    stopWebSecureCallRecovery('restart');
+    webRecoveryStartedAt = Date.now();
+    webRecoveryTickN = 0;
+    try {
+      console.log('CALL_WEB_RECOVERY_START reason=' + why);
+    } catch (_e) {}
+    const startedAt = webRecoveryStartedAt;
+    const tick = () => {
+      if (webRecoveryStartedAt !== startedAt) return;
+      webRecoveryTickN += 1;
+      const elapsedMs = Date.now() - webRecoveryStartedAt;
+      try {
+        console.log('CALL_WEB_RECOVERY_TICK n=' + webRecoveryTickN + ' elapsedMs=' + elapsedMs);
+      } catch (_e) {}
+      try {
+        if (typeof opts.shouldStop === 'function' && opts.shouldStop()) {
+          stopWebSecureCallRecovery('answer-applied');
+          return;
+        }
+      } catch (_e) {}
+      if (elapsedMs > WEB_RECOVERY_MAX_MS) {
+        stopWebSecureCallRecovery('timeout');
+        return;
+      }
+      try { runWebSecureCallRecovery(why); } catch (_e) {}
+      // Live subscription already delivers; recovery is only a safety net then.
+      const nextMs = secureSubHealthy ? WEB_RECOVERY_HEALTHY_INTERVAL_MS : WEB_RECOVERY_INTERVAL_MS;
+      webRecoveryTimer = setTimeout(tick, nextMs);
+    };
+    tick();
+  }
+
+  const ANSWER_NUDGE_DELAYS_MS = [0, 700, 1800];
+  let answerNudgeSession = 0;
+  /**
+   * Remote ICE checks reached the caller before the answer was applied → the callee already answered.
+   * Pull the answer now instead of waiting for the next healthy-interval tick. Bounded: 3 queries per await.
+   */
+  function nudgeAnswerRecovery(reason) {
+    const session = webRecoveryStartedAt;
+    if (!session || answerNudgeSession === session) return false;
+    answerNudgeSession = session;
+    try { console.log('CALL_WEB_RECOVERY_NUDGE reason=' + String(reason || 'ice')); } catch (_e) {}
+    ANSWER_NUDGE_DELAYS_MS.forEach((ms) => {
+      setTimeout(() => {
+        if (webRecoveryStartedAt !== session) return;
+        try { runWebSecureCallRecovery('outgoing-await-answer'); } catch (_e) {}
+      }, ms);
+    });
+    return true;
+  }
+
+  function stopOutgoingAnswerDrainWatchdog(reason) {
+    const why = String(reason || 'done');
+    if (outgoingAnswerWatchdogTimer) {
+      try { clearInterval(outgoingAnswerWatchdogTimer); } catch (_e) {}
+      outgoingAnswerWatchdogTimer = null;
+      outgoingAnswerWatchdogStartedAt = 0;
+      outgoingAnswerWatchdogTickN = 0;
+      try {
+        console.log('CALL_NATIVE_PENDING_WATCHDOG_STOP reason=' + why);
+      } catch (_e) {}
+    }
+    try { stopWebSecureCallRecovery(why); } catch (_e) {}
+  }
+
+  /**
+   * While an outgoing call waits for remote answer:
+   * 1) Native pending peek/drain (Android)
+   * 2) Web Relay catch-up (Desktop + Android WebView)
+   * Every tick is observable — never silent.
+   */
+  function startOutgoingAnswerDrainWatchdog(options) {
+    const opts = options || {};
+    stopOutgoingAnswerDrainWatchdog('restart');
+    outgoingAnswerWatchdogStartedAt = Date.now();
+    outgoingAnswerWatchdogTickN = 0;
+    try {
+      console.log('CALL_NATIVE_PENDING_WATCHDOG_START intervalMs=' + OUTGOING_ANSWER_WATCHDOG_INTERVAL_MS
+        + ' maxMs=' + OUTGOING_ANSWER_WATCHDOG_MS);
+    } catch (_e) {}
+    try {
+      startWebSecureCallRecovery({
+        reason: 'outgoing-await-answer',
+        shouldStop: opts.shouldStop,
+      });
+    } catch (_e) {}
+    const tick = async () => {
+      outgoingAnswerWatchdogTickN += 1;
+      const elapsedMs = Date.now() - outgoingAnswerWatchdogStartedAt;
+      try {
+        console.log('CALL_NATIVE_PENDING_WATCHDOG_TICK n=' + outgoingAnswerWatchdogTickN
+          + ' elapsedMs=' + elapsedMs);
+      } catch (_e) {}
+      try {
+        if (typeof opts.shouldStop === 'function' && opts.shouldStop()) {
+          stopOutgoingAnswerDrainWatchdog('answer-applied');
+          return;
+        }
+      } catch (_e) {}
+      if (elapsedMs > OUTGOING_ANSWER_WATCHDOG_MS) {
+        stopOutgoingAnswerDrainWatchdog('timeout');
+        return;
+      }
+      try {
+        if (pendingSecureReconcileInFlight) {
+          try {
+            console.log('CALL_NATIVE_PENDING_WATCHDOG_DEFER reason=in-flight');
+          } catch (_e) {}
+          return;
+        }
+        await reconcilePendingSecureCallSignals('outgoing-await-answer');
+      } catch (err) {
+        try {
+          console.log('CALL_NATIVE_PENDING_WATCHDOG_ERROR reason='
+            + String((err && err.message) || err || 'unknown').slice(0, 80));
+        } catch (_e) {}
+      }
+    };
+    tick();
+    outgoingAnswerWatchdogTimer = setInterval(() => { tick(); }, OUTGOING_ANSWER_WATCHDOG_INTERVAL_MS);
+  }
+
+  function getDispatchStats() {
+    return { ...dispatchStats };
+  }
+
+  function resetDispatchStatsForQa() {
+    dispatchStats.unwrapCount = 0;
+    dispatchStats.voiceDispatch = 0;
+    dispatchStats.videoDispatch = 0;
+    dispatchStats.replayReject = 0;
+    dispatchStats.duplicateWrap = 0;
+    dispatchStats.invalidOffer = 0;
+    dispatchStats.nativeRingAuth = 0;
+  }
+
+  function normalizeAction(media, type) {
+    const t = String(type || '');
+    if (media === 'video') {
+      if (t === 'v-ring' || t === 'ring') return 'ring';
+      if (t === 'v-offer' || t === 'offer') return 'offer';
+      if (t === 'v-answer' || t === 'answer') return 'answer';
+      if (t === 'v-candidates' || t === 'candidates') return 'candidates';
+      if (t === 'v-candidate' || t === 'candidate') return 'candidate';
+      if (t === 'v-disconnect' || t === 'disconnect') return 'disconnect';
+    }
+    return t;
+  }
+
+  function toWireType(media, action) {
+    if (media === 'video') {
+      if (action === 'ring') return 'v-ring';
+      if (action === 'offer') return 'v-offer';
+      if (action === 'answer') return 'v-answer';
+      if (action === 'candidates') return 'v-candidates';
+      if (action === 'candidate') return 'v-candidate';
+      if (action === 'disconnect') return 'v-disconnect';
+    }
+    return action;
+  }
+
+  function validatePayload(payload, localPubkey) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    if (payload.family !== CALL_SIGNAL_FAMILY || payload.v !== CALL_SIGNAL_VERSION) return null;
+    if (payload.media !== 'voice' && payload.media !== 'video') return null;
+    const action = String(payload.action || '');
+    if (!FRESHNESS_SEC[action]) return null;
+    if (typeof payload.sessionId !== 'string' || payload.sessionId.length < 32) return null;
+    if (typeof payload.signalId !== 'string' || payload.signalId.length < 32) return null;
+    if (typeof payload.sender !== 'string' || !/^[0-9a-fA-F]{64}$/.test(payload.sender.trim())) return null;
+    if (typeof payload.recipient !== 'string' || !/^[0-9a-fA-F]{64}$/.test(payload.recipient.trim())) return null;
+    if (typeof localPubkey !== 'string' || !/^[0-9a-fA-F]{64}$/.test(localPubkey.trim())) return null;
+    const sender = payload.sender.trim().toLowerCase();
+    const recipient = payload.recipient.trim().toLowerCase();
+    const self = localPubkey.trim().toLowerCase();
+    if (recipient !== self) return null;
+    const sentAt = Number(payload.sentAt) || 0;
+    if (!sentAt) return null;
+    const age = Math.floor(Date.now() / 1000) - sentAt;
+    const maxAge = FRESHNESS_SEC[action];
+    if (age > maxAge || age < -30) return null;
+    return { ...payload, sender, recipient, action, sentAt };
+  }
+
+  /**
+   * Build + publish one gift-wrapped call signal.
+   * Returns published outer event. Throws CALL_SIGNAL_E2EE_ENCRYPT_FAILED on any failure (publish ZERO).
+   */
+  /**
+   * Publish to canonical call relays with per-relay truth.
+   * ok >= 1 = transport success. Multiple relays are redundancy only.
+   * Zero-relay failure uses CALL_SIGNAL_TRANSPORT_FAILED (not encrypt failed).
+   */
+  async function awaitPoolPublish(pool, relays, event, meta) {
+    const action = String((meta && meta.action) || 'unknown');
+    let relayList = Array.isArray(relays) && relays.length ? relays.map(normalizeRelayUrl) : [];
+    const canonical = getCallSignalRelays();
+    if (canonical.length) relayList = canonical.slice();
+    if (!relayList.length) {
+      const err = new Error('CALL_SIGNAL_TRANSPORT_FAILED: no call relays');
+      err.code = 'CALL_SIGNAL_TRANSPORT_FAILED';
+      err.name = 'CallSignalTransportError';
+      throw err;
+    }
+
+    const health = App.RelayHealth;
+    if (health && typeof health.select === 'function') {
+      relayList = health.select(relayList, { min: MIN_DELIVERY_CAPABLE_RELAYS, capable: (u) => !isDeliveryGatedRelay(u) });
+    }
+    const authSk = meta && meta.authSk instanceof Uint8Array ? meta.authSk : null;
+
+    let pending;
+    if (typeof pool.ensureRelay === 'function') {
+      // Per-relay publish on the base relay objects: real OK/timeout per relay, NIP-42 write auth.
+      pending = relayList.map((url) => publishToCallRelay(pool, url, event, authSk));
+    } else {
+      let issued = pool.publish(relayList, event);
+      if (issued && !Array.isArray(issued) && typeof issued.then === 'function') issued = await issued;
+      pending = Array.isArray(issued) ? issued : [];
+    }
+    if (!pending.length) {
+      const err = new Error('CALL_SIGNAL_TRANSPORT_FAILED: publish returned no promises');
+      err.code = 'CALL_SIGNAL_TRANSPORT_FAILED';
+      err.name = 'CallSignalTransportError';
+      throw err;
+    }
+
+    const total = pending.length;
+    const t0 = Date.now();
+    return new Promise((resolve, reject) => {
+      let ok = 0;
+      let gatedOk = 0;
+      let capableTimeouts = 0;
+      let done = 0;
+      let settledFirst = false;
+      const finish = () => {
+        try {
+          console.log('CALL_RELAY_PUBLISH_RESULT action=' + action + ' ok=' + ok + ' gated=' + gatedOk + ' total=' + total);
+          if (ok >= 1 && ok + gatedOk < total) console.log('CALL_RELAY_DEGRADED action=' + action + ' ok=' + ok + ' total=' + total);
+        } catch (_e) {}
+        if (ok <= 0 && gatedOk > 0 && capableTimeouts > 0) {
+          // A silent deliverable relay may still have stored/fanned out the wrap (late OK); not a proven failure.
+          try { console.log('CALL_RELAY_DELIVERY_UNCONFIRMED action=' + action + ' timeouts=' + capableTimeouts); } catch (_e) {}
+          if (!settledFirst) {
+            settledFirst = true;
+            resolve({ ok: 0, total, requiredOk: 1, action, unconfirmed: true, firstOkMs: Date.now() - t0 });
+          }
+          return;
+        }
+        if (ok <= 0) {
+          try { console.log('CALL_SEND_1059_PUBLISH_FAIL'); } catch (_e) {}
+          const err = new Error('CALL_SIGNAL_TRANSPORT_FAILED: publish zero relays');
+          err.code = 'CALL_SIGNAL_TRANSPORT_FAILED';
+          err.name = 'CallSignalTransportError';
+          reject(err);
+        }
+      };
+      pending.forEach((p, i) => {
+        const relay = relayList[i] || '';
+        const host = relayHostname(relay) || 'unknown';
+        withTimeout(Promise.resolve(p), CALL_RELAY_PUBLISH_TIMEOUT_MS, 'timeout').then(() => {
+          const ms = Date.now() - t0;
+          if (health) health.record(relay, true, ms);
+          if (isDeliveryGatedRelay(relay)) {
+            gatedOk += 1;
+            try { console.log('CALL_RELAY_OK_GATED relay=' + host + ' ms=' + ms); } catch (_e) {}
+            return;
+          }
+          ok += 1;
+          try { console.log('CALL_RELAY_OK relay=' + host + ' ms=' + ms); } catch (_e) {}
+          if (!settledFirst) {
+            settledFirst = true;
+            resolve({ ok: 1, total, requiredOk: 1, action, firstOkMs: ms });
+          }
+        }, (errRelay) => {
+          const reason = classifyRelayPublishError(errRelay);
+          if (health) health.record(relay, false, 0, reason);
+          if (reason === 'timeout' && !isDeliveryGatedRelay(relay)) capableTimeouts += 1;
+          if (reason === 'auth-required') markCallRelayAuthRequired(relay);
+          try { console.log('CALL_RELAY_FAIL relay=' + host + ' reason=' + reason); } catch (_e) {}
+        }).then(() => {
+          done += 1;
+          if (done === total) finish();
+        });
+      });
+    });
+  }
+
+  const CALL_RELAY_PUBLISH_TIMEOUT_MS = 4000;
+  const CALL_RELAY_CONNECT_TIMEOUT_MS = 3000;
+
+  function withTimeout(promise, ms, label) {
+    let timer = null;
+    return Promise.race([
+      promise,
+      new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(label || 'timeout')), ms); }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+  }
+
+  /**
+   * Publish one wrap to one relay. On NIP-42 auth-required, authenticate the connection with the
+   * wrap's own ephemeral key (never the identity key) and retry once.
+   */
+  async function publishToCallRelay(pool, url, event, authSk) {
+    const relay = await pool.ensureRelay(url, { connectionTimeout: CALL_RELAY_CONNECT_TIMEOUT_MS });
+    try {
+      return await relay.publish(event);
+    } catch (err) {
+      if (classifyRelayPublishError(err) !== 'auth-required' || !authSk || typeof relay.auth !== 'function' || !relay.challenge) {
+        throw err;
+      }
+      const finalizeEvent = getFinalizeEvent();
+      await relay.auth((template) => finalizeEvent(template, authSk));
+      const gatedHost = relayHostname(url);
+      callRelayWriteAuthGated.add(normalizeRelayUrl(url));
+      if (gatedHost) callRelayWriteAuthGated.add(gatedHost);
+      try { console.log('CALL_RELAY_AUTH_OK relay=' + (gatedHost || 'unknown')); } catch (_e) {}
+      return relay.publish(event);
+    }
+  }
+
+  const CALL_PUBLISH_PERF_MARKS = {
+    ring: ['CALL_RING_PUBLISH_START', 'CALL_RING_FIRST_RELAY_ACK'],
+    offer: ['OFFER_PUBLISH_START', 'OFFER_FIRST_RELAY_ACK'],
+    answer: ['ANSWER_PUBLISH_START', 'ANSWER_PUBLISHED'],
+  };
+
+  function markCallTimeline(media, name) {
+    if (!name) return;
+    try {
+      if (App.RealtimePerf && typeof App.RealtimePerf.markCall === 'function') App.RealtimePerf.markCall(media, name);
+    } catch (_e) {}
+  }
+
+  async function publishGiftWrappedCallSignal(opts) {
+    const media = opts && opts.media;
+    const peerPubkey = opts && opts.peerPubkey;
+    const type = opts && opts.type;
+    const data = opts && opts.data;
+    const sessionId = opts && opts.sessionId;
+    const pool = opts && opts.pool;
+    const relays = opts && opts.relays;
+    const senderPubkey = opts && opts.senderPubkey;
+    const workerAuth =
+      App.SosCryptoSigner &&
+      typeof App.SosCryptoSigner.isWorkerAuthoritative === 'function' &&
+      App.SosCryptoSigner.isWorkerAuthoritative();
+    let senderPrivateKey = opts && opts.senderPrivateKey;
+    if (!senderPrivateKey && !workerAuth) {
+      senderPrivateKey =
+        App.SosCryptoSigner && typeof App.SosCryptoSigner.f1CryptoModuleSessionKeyHex === 'function'
+          ? App.SosCryptoSigner.f1CryptoModuleSessionKeyHex()
+          : '';
+    }
+
+
+    if (media !== 'voice' && media !== 'video') {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'bad media');
+    }
+    if (!pool || typeof pool.publish !== 'function') {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'pool unavailable');
+    }
+    const recipient = requireHexPubkey(peerPubkey);
+    const sender = requireHexPubkey(senderPubkey);
+    const action = normalizeAction(media, type);
+    if (!FRESHNESS_SEC[action]) {
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'bad action');
+    }
+    const sid = typeof sessionId === 'string' && sessionId.length >= 32 ? sessionId : createSessionId();
+    const signalId = createSignalId();
+    const sentAt = Math.floor(Date.now() / 1000);
+
+    const payload = {
+      family: CALL_SIGNAL_FAMILY,
+      v: CALL_SIGNAL_VERSION,
+      media,
+      action,
+      sessionId: sid,
+      signalId,
+      sender,
+      recipient,
+      sentAt,
+      data: data == null ? null : data,
+    };
+
+    let wrap;
+    let wrapAuthSk = null;
+    try {
+      const finalizeEvent = getFinalizeEvent();
+      const rumorUnsigned = {
+        kind: RUMOR_KIND,
+        pubkey: sender,
+        created_at: sentAt,
+        tags: [],
+        content: JSON.stringify(payload),
+      };
+      const rumor = { ...rumorUnsigned, id: getEventHash(rumorUnsigned) };
+
+      let seal;
+      if (workerAuth) {
+        const sealContent = await App.SosCryptoSigner.nip44CallEncryptJson(rumor, recipient);
+        seal = await Promise.resolve(
+          App.SosCryptoSigner.signCallSeal({
+            kind: SEAL_KIND,
+            created_at: randomizedPastCreatedAt(),
+            tags: [],
+            content: sealContent,
+            pubkey: sender,
+          }),
+        );
+      } else {
+        const senderSk = requirePrivBytes(senderPrivateKey);
+        const sealDraft = {
+          kind: SEAL_KIND,
+          created_at: randomizedPastCreatedAt(),
+          tags: [],
+          content: nip44EncryptJson(rumor, senderSk, recipient),
+        };
+        seal = finalizeEvent(sealDraft, senderSk);
+      }
+      if (!verifyEventSig(seal)) {
+        callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'seal signature invalid');
+      }
+
+      const wrapSk = generateEphemeralSecretKey();
+      const wrapPk = getPublicKeyFromSk(wrapSk);
+      if (wrapPk.toLowerCase() === sender) {
+        callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'wrapper equals identity');
+      }
+      const wrapDraft = {
+        kind: GIFT_WRAP_KIND,
+        created_at: randomizedPastCreatedAt(),
+        tags: [['p', recipient]],
+        content: nip44EncryptJson(seal, wrapSk, recipient),
+      };
+      wrap = finalizeEvent(wrapDraft, wrapSk);
+      if (!verifyEventSig(wrap)) {
+        callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'wrap signature invalid');
+      }
+      if (wrap.pubkey.toLowerCase() === sender) {
+        callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'outer pubkey is identity');
+      }
+      wrapAuthSk = wrapSk;
+      try { console.log('CALL_SEND_1059_BUILD_OK'); } catch (_e) {}
+    } catch (err) {
+      if (err && (err.code === 'CALL_SIGNAL_E2EE_ENCRYPT_FAILED' || err.code === 'BLOCKED_CRYPTO_API')) throw err;
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', err && err.message ? err.message : 'wrap failed');
+    }
+
+    try {
+      console.log('CALL_SEND_1059_PUBLISH_START');
+    } catch (_e) {}
+    const perfMarks = CALL_PUBLISH_PERF_MARKS[action];
+    markCallTimeline(media, perfMarks && perfMarks[0]);
+    try {
+      await awaitPoolPublish(pool, Array.isArray(relays) ? relays : getCallSignalRelays(), wrap, { action, authSk: wrapAuthSk });
+      markCallTimeline(media, perfMarks && perfMarks[1]);
+    } catch (pubErr) {
+      try { console.log('CALL_SEND_1059_PUBLISH_FAIL'); } catch (_e) {}
+      if (pubErr && pubErr.code) throw pubErr;
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', pubErr && pubErr.message ? pubErr.message : 'publish');
+    }
+    try {
+      console.log('CALL_SEND_1059_PUBLISH_OK');
+      console.log('CALL_SIGNAL_SENT action=' + action + ' encrypted=true');
+    } catch (_e) {}
+    return { event: wrap, sessionId: sid, signalId, action, sentAt, transport: 'giftwrap1059' };
+  }
+
+  /**
+   * Unwrap kind 1059 → validated logical call signal.
+   * Returns { media, action, wireType, data, sender, sessionId, signalId, sentAt, rumor, seal }
+   * or null on reject.
+   */
+  async function unwrapGiftWrappedCallSignal(wrapEvent, recipientPrivateKey, localPubkey) {
+    try {
+      if (!wrapEvent || wrapEvent.kind !== GIFT_WRAP_KIND) return null;
+      if (!verifyEventSig(wrapEvent)) return null;
+      const self = requireHexPubkey(localPubkey, 'CALL_SIGNAL_E2EE_DECRYPT_FAILED');
+      if (getPTag(wrapEvent) !== self) return null;
+      const recipSk = requirePrivBytes(recipientPrivateKey);
+
+      let seal;
+      try {
+        seal = nip44DecryptJson(wrapEvent, recipSk);
+      } catch (_e) {
+        return null;
+      }
+      if (!seal || seal.kind !== SEAL_KIND) return null;
+      if (!verifyEventSig(seal)) return null;
+
+      let rumor;
+      try {
+        rumor = nip44DecryptJson(seal, recipSk);
+      } catch (_e) {
+        return null;
+      }
+      if (!rumor || rumor.kind !== RUMOR_KIND) return null;
+      if (String(rumor.pubkey || '').toLowerCase() !== String(seal.pubkey || '').toLowerCase()) return null;
+
+      let payload;
+      try {
+        payload = typeof rumor.content === 'string' ? JSON.parse(rumor.content) : rumor.content;
+      } catch (_e) {
+        return null;
+      }
+      const valid = validatePayload(payload, self);
+      if (!valid) return null;
+      if (valid.sender !== String(seal.pubkey || '').toLowerCase()) return null;
+      if (rememberSignalId(valid.signalId)) return null; // replay
+
+      return {
+        media: valid.media,
+        action: valid.action,
+        wireType: toWireType(valid.media, valid.action),
+        data: valid.data,
+        sender: valid.sender,
+        recipient: valid.recipient,
+        sessionId: valid.sessionId,
+        signalId: valid.signalId,
+        sentAt: valid.sentAt,
+        rumor,
+        seal,
+        wrapId: wrapEvent.id,
+      };
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function looksLikeLegacyDirectCallSignal(event) {
+    return !!(event && event.kind === 25050 && Array.isArray(event.tags) && event.tags.some((t) => t && t[0] === 'type'));
+  }
+
+  // ─── Safe cutover: callSignalGiftWrapRequired (monotonic) ───
+  // First Native APK that includes 1059 opaque wake + secure queue + bridge:
+  // versionCode 115 / versionName 1.0.114 (NOT published in this phase).
+  const CALL_GIFT_WRAP_NATIVE_MIN_VERSION_CODE = 115;
+  const CALL_GIFT_WRAP_NATIVE_MIN_VERSION_NAME = '1.0.114';
+  const SEEN_GIFTWRAP_REQUIRED_KEY = 'sos_call_signal_giftwrap_required_seen';
+  const QA_LOCAL_GIFTWRAP_KEY = 'sos.callSignalGiftWrapRequired';
+  const APP_VERSION_URL = './app-version.json';
+  const POLICY_STATES = Object.freeze({
+    NOT_REQUIRED: 'NOT_REQUIRED',
+    REQUIRED: 'REQUIRED',
+    POLICY_UNAVAILABLE: 'POLICY_UNAVAILABLE',
+  });
+  const SEND_MODES = Object.freeze({
+    SECURE: 'SECURE',
+    LEGACY_ROLLOUT: 'LEGACY_ROLLOUT',
+    BLOCK: 'BLOCK',
+  });
+
+  let giftWrapRequiredKnown = false;
+
+  function readSeenGiftWrapRequired() {
+    if (giftWrapRequiredKnown) return true;
+    try {
+      const raw = window.localStorage && window.localStorage.getItem(SEEN_GIFTWRAP_REQUIRED_KEY);
+      if (raw === '1' || raw === 'true') {
+        giftWrapRequiredKnown = true;
+        return true;
+      }
+    } catch (_e) {}
+    return false;
+  }
+
+  function writeSeenGiftWrapRequired(required) {
+    if (!required) return readSeenGiftWrapRequired();
+    giftWrapRequiredKnown = true;
+    try {
+      if (window.localStorage) window.localStorage.setItem(SEEN_GIFTWRAP_REQUIRED_KEY, '1');
+    } catch (_e) {}
+    return true;
+  }
+
+  /** @returns {boolean|null} */
+  function parseRemoteCallSignalGiftWrapRequired(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    if (!Object.prototype.hasOwnProperty.call(data, 'callSignalGiftWrapRequired')) return null;
+    const v = data.callSignalGiftWrapRequired;
+    if (v === true || v === 1 || v === '1' || v === 'true') return true;
+    if (v === false || v === 0 || v === '0' || v === 'false') return false;
+    return null;
+  }
+
+  function readQaGiftWrapOverride() {
+    try {
+      if (typeof App.__qaCallSignalGiftWrapRequiredOverride === 'boolean') {
+        return App.__qaCallSignalGiftWrapRequiredOverride;
+      }
+    } catch (_e) {}
+    try {
+      if (window.__SOS_CALL_SIGNAL_GIFTWRAP_REQUIRED__ === true) return true;
+      if (window.__SOS_CALL_SIGNAL_GIFTWRAP_REQUIRED__ === false) return false;
+    } catch (_e2) {}
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const v = localStorage.getItem(QA_LOCAL_GIFTWRAP_KEY);
+        if (v === '1' || v === 'true') return true;
+        if (v === '0' || v === 'false') return false;
+      }
+    } catch (_e3) {}
+    return null;
+  }
+
+  function isCallSignalGiftWrapRequired() {
+    if (readSeenGiftWrapRequired()) return true;
+    const qa = readQaGiftWrapOverride();
+    if (qa === true) return true;
+    return false;
+  }
+
+  /** Privacy phase ACTIVE only after owner activates + sticky true. */
+  function isCallPrivacySignalingActive() {
+    return isCallSignalGiftWrapRequired() === true;
+  }
+
+  /**
+   * Authoritative refresh. Sticky after true — never downgrade.
+   *
+   * States (informational; outgoing send is 1059-only in every state):
+   * - NOT_REQUIRED: remote/qa false and never seen true
+   * - REQUIRED: seen true OR remote true
+   * - POLICY_UNAVAILABLE: fetch fail / missing field / malformed
+   */
+  async function refreshCallSignalGiftWrapPolicy(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const seenBefore = readSeenGiftWrapRequired();
+
+    const qa = readQaGiftWrapOverride();
+    if (qa === true) {
+      writeSeenGiftWrapRequired(true);
+      return {
+        state: POLICY_STATES.REQUIRED,
+        required: true,
+        fetchOk: true,
+        remoteValue: true,
+        source: 'qa-override',
+      };
+    }
+    if (qa === false && !seenBefore) {
+      return {
+        state: POLICY_STATES.NOT_REQUIRED,
+        required: false,
+        fetchOk: true,
+        remoteValue: false,
+        source: 'qa-override',
+      };
+    }
+    if (qa === false && seenBefore) {
+      return {
+        state: POLICY_STATES.REQUIRED,
+        required: true,
+        fetchOk: true,
+        remoteValue: false,
+        source: 'sticky-after-true',
+      };
+    }
+
+    if (seenBefore && !opts.forceFetch) {
+      return {
+        state: POLICY_STATES.REQUIRED,
+        required: true,
+        fetchOk: false,
+        remoteValue: null,
+        source: 'sticky',
+      };
+    }
+
+    if (opts.skipFetch) {
+      if (seenBefore) {
+        return {
+          state: POLICY_STATES.REQUIRED,
+          required: true,
+          fetchOk: false,
+          remoteValue: null,
+          source: 'sticky',
+        };
+      }
+      return {
+        state: POLICY_STATES.NOT_REQUIRED,
+        required: false,
+        fetchOk: false,
+        remoteValue: null,
+        source: 'default-off',
+      };
+    }
+
+    let fetchOk = false;
+    let remoteValue = null;
+    try {
+      const fetchFn =
+        typeof opts.fetchImpl === 'function'
+          ? opts.fetchImpl
+          : typeof window.fetch === 'function'
+            ? window.fetch.bind(window)
+            : null;
+      if (!fetchFn) throw new Error('no-fetch');
+      const res = await fetchFn(opts.url || APP_VERSION_URL, {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'omit',
+        signal: opts.signal,
+      });
+      if (!res || !res.ok) throw new Error('http-' + String(res && res.status));
+      const data = await res.json();
+      fetchOk = true;
+      remoteValue = parseRemoteCallSignalGiftWrapRequired(data);
+      if (remoteValue === true) writeSeenGiftWrapRequired(true);
+    } catch (_err) {
+      fetchOk = false;
+      remoteValue = null;
+    }
+
+    if (readSeenGiftWrapRequired()) {
+      return {
+        state: POLICY_STATES.REQUIRED,
+        required: true,
+        fetchOk,
+        remoteValue,
+        source: fetchOk && remoteValue === true ? 'remote' : 'sticky',
+      };
+    }
+    if (fetchOk && remoteValue === false) {
+      return {
+        state: POLICY_STATES.NOT_REQUIRED,
+        required: false,
+        fetchOk: true,
+        remoteValue: false,
+        source: 'remote',
+      };
+    }
+    return {
+      state: POLICY_STATES.POLICY_UNAVAILABLE,
+      required: false,
+      fetchOk,
+      remoteValue,
+      source: fetchOk ? 'field-absent' : 'fetch-failed',
+    };
+  }
+
+  /**
+   * Shared voice/video send decision.
+   * @returns {{ mode: 'SECURE', policy: object }}
+   */
+  async function resolveCallSignalSecurityDecision(options) {
+    const policy = await refreshCallSignalGiftWrapPolicy(options);
+    // Outgoing private call signaling is secure-only: unavailable, malformed, absent or
+    // "not required" policy never re-enables legacy 25050 send (read compat stays separate).
+    if (policy.state !== POLICY_STATES.REQUIRED && policy.required !== true) {
+      try {
+        console.log('CALL_SEND_POLICY_SECURE_DEFAULT state=' + String(policy.state) + ' source=' + String(policy.source || ''));
+      } catch (_e) {}
+    }
+    return { mode: SEND_MODES.SECURE, policy };
+  }
+
+  /**
+   * Outgoing legacy kind 25050 is disabled: kind 1059 gift wrap is the only send transport.
+   */
+  async function publishLegacyDirectCallSignal(_opts) {
+    try { console.warn('CALL_SIGNAL_LEGACY_SEND_DISABLED'); } catch (_e) {}
+    callSignalFail('CALL_SIGNAL_LEGACY_SEND_DISABLED', 'outgoing 25050 disabled');
+  }
+
+  /**
+   * ONE transport per signal — never dual-write 1059 + 25050.
+   */
+  async function publishCallSignal(opts) {
+    try { console.log('CALL_SEND_ENTER'); } catch (_e) {}
+    const decision = await resolveCallSignalSecurityDecision(opts && opts.policyOptions);
+    if (decision.mode === SEND_MODES.BLOCK) {
+      try { console.log('CALL_SEND_POLICY_BLOCK'); } catch (_e) {}
+      callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'policy-block');
+    }
+    if (decision.mode === SEND_MODES.SECURE) {
+      try { console.log('CALL_SEND_POLICY_REQUIRED'); } catch (_e) {}
+      try {
+        const res = await publishGiftWrappedCallSignal(opts);
+        try {
+          console.log('CALL_SEND_RETURN_OK');
+        } catch (_e) {}
+        return { ...res, transport: 'giftwrap1059', mode: SEND_MODES.SECURE };
+      } catch (err) {
+        try { console.log('CALL_SEND_1059_PUBLISH_FAIL'); } catch (_e) {}
+        // FAIL CLOSED — no 25050 fallback after REQUIRED.
+        if (err && err.code) throw err;
+        callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', err && err.message ? err.message : 'secure-send');
+      }
+    }
+    try { console.log('CALL_SEND_POLICY_BLOCK mode=' + String(decision.mode)); } catch (_e) {}
+    callSignalFail('CALL_SIGNAL_E2EE_ENCRYPT_FAILED', 'secure-only');
+  }
+
+  // Shared LEGACY_READ_ONLY kind 25050 subscription: voice + video register handlers, one REQ per identity.
+  const legacyListeners = new Map();
+  const legacyStats = { opens: 0, reused: 0 };
+  let legacySub = null;
+  let legacySubSince = 0;
+  let legacySubIdentity = '';
+  let legacySubOpenedAt = 0;
+  let legacySubEose = false;
+  let legacyOpenTimer = null;
+
+  function closeLegacySub() {
+    const sub = legacySub;
+    legacySub = null;
+    legacySubEose = false;
+    if (!sub) return;
+    try {
+      if (typeof sub.close === 'function') sub.close();
+      else if (typeof sub.unsub === 'function') sub.unsub();
+    } catch (_e) {}
+  }
+
+  function openLegacySubNow() {
+    legacyOpenTimer = null;
+    closeLegacySub();
+    if (!legacyListeners.size || !App.pool || !App.publicKey) return;
+    let since = Infinity;
+    legacyListeners.forEach((l) => { since = Math.min(since, l.since); });
+    legacySubSince = since;
+    legacySubIdentity = String(App.publicKey);
+    legacySubOpenedAt = Date.now();
+    legacyStats.opens += 1;
+    try {
+      legacySub = App.pool.subscribeMany(Array.isArray(App.relayUrls) ? App.relayUrls : [], [
+        { kinds: [25050], '#p': [App.publicKey], since },
+      ], {
+        onevent: (ev) => {
+          legacyListeners.forEach((l) => { try { l.onevent(ev); } catch (_e) {} });
+        },
+        oneose: () => {
+          legacySubEose = true;
+          legacyListeners.forEach((l) => { try { if (l.oneose) l.oneose(); } catch (_e) {} });
+        },
+      });
+    } catch (_err) {
+      legacySub = null;
+      try { console.warn('CALL_SUBSCRIBE_FAILED'); } catch (_e) {}
+    }
+  }
+
+  function subscribeLegacyCallSignals(key, opts) {
+    const o = opts || {};
+    const token = {};
+    const listener = { token, since: Math.max(0, Math.floor(Number(o.since) || 0)), onevent: o.onevent, oneose: o.oneose };
+    legacyListeners.set(key, listener);
+    const covered = !!legacySub && legacySubIdentity === String(App.publicKey || '') && legacySubSince <= listener.since;
+    const fresh = Date.now() - legacySubOpenedAt < FORCED_SUBSCRIBE_COALESCE_MS;
+    if (covered && (!o.force || fresh) && !legacyOpenTimer) {
+      legacyStats.reused += 1;
+      try { console.log('CALL_SUBSCRIBE_LEGACY_SHARED key=' + key); } catch (_e) {}
+      if (legacySubEose && listener.oneose) setTimeout(() => { try { listener.oneose(); } catch (_e) {} }, 0);
+    } else if (!legacyOpenTimer) {
+      legacyOpenTimer = setTimeout(openLegacySubNow, 0);
+    }
+    return {
+      close() {
+        const cur = legacyListeners.get(key);
+        if (cur && cur.token === token) legacyListeners.delete(key);
+        if (!legacyListeners.size) {
+          if (legacyOpenTimer) { clearTimeout(legacyOpenTimer); legacyOpenTimer = null; }
+          closeLegacySub();
+        }
+      },
+    };
+  }
+
+  function getLegacySubscriptionStats() {
+    return { opens: legacyStats.opens, reused: legacyStats.reused, listeners: legacyListeners.size, active: legacySub ? 1 : 0 };
+  }
+
+  Object.assign(App, {
+    CallSignalE2ee: {
+      subscribeLegacyCallSignals,
+      getLegacySubscriptionStats,
+      FAMILY: CALL_SIGNAL_FAMILY,
+      VERSION: CALL_SIGNAL_VERSION,
+      SEAL_KIND,
+      GIFT_WRAP_KIND,
+      RUMOR_KIND,
+      FRESHNESS_SEC,
+      MAX_SIGNAL_SDP_CHARS,
+      POLICY_STATES,
+      SEND_MODES,
+      CALL_GIFT_WRAP_NATIVE_MIN_VERSION_CODE,
+      CALL_GIFT_WRAP_NATIVE_MIN_VERSION_NAME,
+      SEEN_GIFTWRAP_REQUIRED_KEY,
+      createSessionId,
+      createSignalId,
+      publishGiftWrappedCallSignal,
+      publishLegacyDirectCallSignal,
+      publishCallSignal,
+      unwrapGiftWrappedCallSignal,
+      dispatchGiftWrappedCallSignal,
+      shouldDropOldSessionDisconnect,
+      enqueueSecureDispatch,
+      ensureSecureCallSubscription,
+      closeSecureCallSubscription,
+      isSecureCallReceiverReady,
+      notifyCallIdentityReady,
+      getSecureReceiverStateForQa: () => ({
+        open: !!secureSub,
+        healthy: secureSubHealthy,
+        boundToCurrent: !!secureSubPubkey && secureSubPubkey === currentAccountPubkey(),
+        retryPending: !!secureSubRetryTimer,
+        retryDelayMs: secureSubRetryDelayMs,
+      }),
+      drainPendingSecureWrapsFromNative,
+      reconcilePendingSecureCallSignals,
+      startOutgoingAnswerDrainWatchdog,
+      stopOutgoingAnswerDrainWatchdog,
+      startWebSecureCallRecovery,
+      stopWebSecureCallRecovery,
+      runWebSecureCallRecovery,
+      nudgeAnswerRecovery,
+      isPendingSecureReconcileInFlight: () => !!pendingSecureReconcileInFlight,
+      getPendingSecureReconcileInFlight: () => pendingSecureReconcileInFlight,
+      getCallSignalRelays,
+      isDeliveryGatedRelay,
+      CANONICAL_CALL_RELAYS,
+      NATIVE_HANDOFF_REV,
+      normalizeSessionDescription,
+      getCachedSecureOffer,
+      clearSecureOfferCache,
+      markCallSessionTerminal,
+      isCallSessionTerminal,
+      getDispatchStats,
+      resetDispatchStatsForQa,
+      looksLikeLegacyDirectCallSignal,
+      normalizeAction,
+      toWireType,
+      randomizedPastCreatedAt,
+      generateEphemeralSecretKey,
+      rememberSignalId,
+      rememberWrapId,
+      parseRemoteCallSignalGiftWrapRequired,
+      refreshCallSignalGiftWrapPolicy,
+      resolveCallSignalSecurityDecision,
+      isCallSignalGiftWrapRequired,
+      isCallPrivacySignalingActive,
+      writeSeenGiftWrapRequired,
+      readSeenGiftWrapRequired,
+      _seenSignalIds: seenSignalIds,
+      _seenWrapIds: seenWrapIds,
+    },
+  });
+
+  App.isCallSignalGiftWrapRequired = isCallSignalGiftWrapRequired;
+  App.isCallPrivacySignalingActive = isCallPrivacySignalingActive;
+  App.resolveCallSignalSecurityDecision = resolveCallSignalSecurityDecision;
+  App.reconcilePendingSecureCallSignals = reconcilePendingSecureCallSignals;
+  App.startOutgoingAnswerDrainWatchdog = startOutgoingAnswerDrainWatchdog;
+  App.stopOutgoingAnswerDrainWatchdog = stopOutgoingAnswerDrainWatchdog;
+  App.startWebSecureCallRecovery = startWebSecureCallRecovery;
+  App.stopWebSecureCallRecovery = stopWebSecureCallRecovery;
+  App.runWebSecureCallRecovery = runWebSecureCallRecovery;
+  App.getCallSignalRelays = getCallSignalRelays;
+  App.markCallSessionTerminal = markCallSessionTerminal;
+  App.isCallSessionTerminal = isCallSessionTerminal;
+  App.clearSecureOfferCache = clearSecureOfferCache;
+  App.NATIVE_HANDOFF_REV = NATIVE_HANDOFF_REV;
+  App.notifyCallIdentityReady = notifyCallIdentityReady;
+  App.isCallReceiveReady = isSecureCallReceiverReady;
+
+  try {
+    console.log('CALL_NATIVE_HANDOFF_REV=' + NATIVE_HANDOFF_REV);
+  } catch (_e) {}
+
+  // Shared secure 1059 subscription — one unwrap for voice+video.
+  if (typeof App.notifyPoolReady === 'function') {
+    const prevNotify = App.notifyPoolReady;
+    App.notifyPoolReady = function(pool) {
+      prevNotify(pool);
+      try { ensureSecureCallSubscription(); } catch (_e) {}
+      try { refreshCallSignalGiftWrapPolicy({ skipFetch: false }); } catch (_e2) {}
+      try { reconcilePendingSecureCallSignals('pool-ready'); } catch (_e3) {}
+      try { runWebSecureCallRecovery('pool-ready'); } catch (_e4) {}
+    };
+  } else {
+    App.notifyPoolReady = function(_pool) {
+      try { ensureSecureCallSubscription(); } catch (_e) {}
+      try { reconcilePendingSecureCallSignals('pool-ready'); } catch (_e2) {}
+      try { runWebSecureCallRecovery('pool-ready'); } catch (_e3) {}
+    };
+  }
+  try {
+    if (App.pool && App.publicKey) ensureSecureCallSubscription();
+  } catch (_e) {}
+  try {
+    refreshCallSignalGiftWrapPolicy({ skipFetch: false });
+  } catch (_e) {}
+  try {
+    setTimeout(() => {
+      try { reconcilePendingSecureCallSignals('js-bridge-ready'); } catch (_e) {}
+      try { runWebSecureCallRecovery('js-bridge-ready'); } catch (_e2) {}
+    }, 0);
+  } catch (_e) {}
+  try {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      try { ensureSecureCallSubscription({ force: true, reason: 'visibility' }); } catch (_e) {}
+      try { reconcilePendingSecureCallSignals('visibility'); } catch (_e2) {}
+      try { runWebSecureCallRecovery('visibility'); } catch (_e3) {}
+    });
+  } catch (_e) {}
+})(window);

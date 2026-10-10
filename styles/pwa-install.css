@@ -1,0 +1,1145 @@
+/* חלק PWA (pwa-install.css) – באנרים בסגנון LoadNug / ניאון SOS | HYPER CORE TECH */
+
+:root {
+  --pwa-neon-pink: #fe2c55;
+  --pwa-neon-cyan: #25f4ee;
+  --pwa-neon-green: #39ff14;
+  --pwa-surface: #07070a;
+  --pwa-surface-2: #0c0c12;
+}
+
+/* ===== באנר התקנה – מובייל למעלה (לא מכסה תפריט תחתון) | HYPER CORE TECH ===== */
+.pwa-install-banner {
+  position: fixed;
+  top: 0;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  background:
+    linear-gradient(180deg, rgba(12, 12, 18, 0.96) 0%, rgba(5, 5, 8, 0.98) 100%);
+  color: #fff;
+  padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  z-index: 99999;
+  border-bottom: 1px solid rgba(37, 244, 238, 0.28);
+  border-top: none;
+  box-shadow:
+    0 8px 28px rgba(0, 0, 0, 0.55),
+    0 1px 0 rgba(254, 44, 85, 0.22),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  transform: translateY(-110%);
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  direction: rtl;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.pwa-install-banner::before {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--pwa-neon-pink), var(--pwa-neon-green), var(--pwa-neon-cyan));
+  opacity: 0.9;
+  animation: pwa-neon-scan 3.2s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes pwa-neon-scan {
+  0% { opacity: 0.45; filter: brightness(0.85); }
+  50% { opacity: 1; filter: brightness(1.25); }
+  100% { opacity: 0.45; filter: brightness(0.85); }
+}
+
+.pwa-install-banner--visible {
+  transform: translateY(0);
+}
+
+.pwa-install-banner__content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.pwa-install-banner__icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: contain;
+  background: #050508;
+  border: 1px solid rgba(37, 244, 238, 0.35);
+  box-shadow:
+    0 0 0 1px rgba(254, 44, 85, 0.25),
+    0 0 14px rgba(37, 244, 238, 0.25),
+    0 0 18px rgba(254, 44, 85, 0.18);
+  animation: pwa-logo-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pwa-logo-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(254, 44, 85, 0.22),
+      0 0 10px rgba(37, 244, 238, 0.18),
+      0 0 14px rgba(254, 44, 85, 0.12);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(37, 244, 238, 0.4),
+      0 0 16px rgba(37, 244, 238, 0.35),
+      0 0 22px rgba(254, 44, 85, 0.28);
+  }
+}
+
+.pwa-install-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pwa-install-banner__text strong {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.pwa-install-banner__text span {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pwa-install-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pwa-install-banner__dismiss {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.pwa-install-banner__dismiss:hover {
+  color: #fff;
+  border-color: rgba(254, 44, 85, 0.45);
+  background: rgba(254, 44, 85, 0.12);
+}
+
+.pwa-install-banner__install {
+  background: linear-gradient(135deg, var(--pwa-neon-cyan) 0%, var(--pwa-neon-pink) 100%);
+  color: #050508;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  box-shadow:
+    0 0 12px rgba(37, 244, 238, 0.35),
+    0 0 18px rgba(254, 44, 85, 0.28);
+}
+
+.pwa-install-banner__install:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 16px rgba(37, 244, 238, 0.45),
+    0 0 24px rgba(254, 44, 85, 0.35);
+}
+
+.pwa-install-banner__install:active {
+  transform: translateY(0);
+}
+
+/* דסקטופ: באנר התקנה בתחתית אזור התוכן (לא חוצה תפריט צד) | HYPER CORE TECH */
+@media (min-width: 769px) {
+  body:has(.videos-feed) .pwa-install-banner,
+  body.videos-page .pwa-install-banner {
+    top: auto;
+    left: 12px;
+    right: calc(var(--videos-desktop-nav-width, 260px) + 12px);
+    bottom: 12px;
+    width: auto;
+    max-width: none;
+    border-radius: 16px;
+    border: 1px solid rgba(37, 244, 238, 0.28);
+    border-bottom: 1px solid rgba(37, 244, 238, 0.28);
+    padding: 14px 16px;
+    transform: translateY(110%);
+    box-shadow:
+      0 12px 36px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(254, 44, 85, 0.12),
+      0 0 22px rgba(37, 244, 238, 0.1);
+  }
+
+  body:has(.videos-feed) .pwa-install-banner.pwa-install-banner--visible,
+  body.videos-page .pwa-install-banner.pwa-install-banner--visible {
+    transform: translateY(0);
+  }
+
+  body:has(.videos-feed) .pwa-install-banner::before,
+  body.videos-page .pwa-install-banner::before {
+    inset: 0 auto auto 0;
+    border-radius: 16px 16px 0 0;
+  }
+}
+
+/* ===== טוסט עדכון גרסה ===== */
+.pwa-update-toast {
+  position: fixed;
+  bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+  left: 12px;
+  right: 12px;
+  transform: translateY(150px);
+  background:
+    linear-gradient(160deg, rgba(10, 10, 14, 0.98) 0%, rgba(7, 7, 10, 0.98) 100%);
+  color: #fff;
+  padding: 14px;
+  border-radius: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  z-index: 2147483000;
+  pointer-events: auto;
+  direction: rtl;
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  border: 1px solid rgba(35, 116, 225, 0.32);
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(35, 116, 225, 0.1),
+    0 0 20px rgba(35, 116, 225, 0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+
+.pwa-update-toast::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, #0a3d6b, #1ee3ff, #0a3d6b);
+  box-shadow: 0 0 6px rgba(30, 227, 255, 0.55);
+  animation: pwa-neon-scan 6.5s linear infinite;
+  pointer-events: none;
+}
+
+.pwa-update-toast--visible {
+  transform: translateY(0);
+}
+
+.pwa-update-toast__logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: contain;
+  flex-shrink: 0;
+  background: #050508;
+  border: 1px solid rgba(37, 244, 238, 0.35);
+  box-shadow:
+    0 0 12px rgba(37, 244, 238, 0.25),
+    0 0 16px rgba(254, 44, 85, 0.18);
+  animation: pwa-logo-pulse 2.4s ease-in-out infinite;
+}
+
+.pwa-update-toast__content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 120px;
+}
+
+.pwa-update-toast__title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.pwa-update-toast__subtitle {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.65);
+  line-height: 1.35;
+}
+
+.pwa-update-toast__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-inline-start: auto;
+}
+
+.pwa-update-toast__later {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.85);
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.pwa-update-toast__later:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #fff;
+}
+
+.pwa-update-toast__now {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.04) 42%, transparent 55%),
+    linear-gradient(135deg, rgba(28, 78, 160, 0.55) 0%, rgba(18, 52, 110, 0.42) 100%);
+  border: 1px solid rgba(140, 180, 240, 0.35);
+  color: #e8f0ff;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.2s, border-color 0.2s;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 4px 16px rgba(12, 40, 90, 0.35);
+}
+
+.pwa-update-toast__now::after {
+  content: '';
+  position: absolute;
+  top: -40%;
+  left: -20%;
+  width: 55%;
+  height: 180%;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.08) 35%,
+    rgba(255, 255, 255, 0.38) 48%,
+    rgba(255, 255, 255, 0.08) 62%,
+    transparent 100%
+  );
+  transform: rotate(18deg);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pwa-update-toast__now:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.06) 42%, transparent 55%),
+    linear-gradient(135deg, rgba(32, 88, 175, 0.65) 0%, rgba(22, 60, 125, 0.5) 100%);
+  border-color: rgba(160, 195, 245, 0.45);
+  transform: translateY(-1px);
+}
+
+/* כרטיסיית עדכון APK – אותו מיקום כמו עדכון הווב; תור אחד בכל פעם | HYPER CORE TECH */
+.apk-update-toast {
+  z-index: 2147483001;
+  border-color: rgba(70, 120, 190, 0.4);
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(70, 120, 190, 0.12),
+    0 0 20px rgba(40, 80, 140, 0.18);
+}
+
+.apk-update-toast .pwa-update-toast__now {
+  color: #e8f0ff;
+}
+
+.apk-update-toast .pwa-update-toast__now:hover {
+  border-color: rgba(160, 195, 245, 0.45);
+}
+
+/* דסקטופ בלבד: מיקום אחיד לפיד ולשיחות (בלי קפיצה בין מצבים) | HYPER CORE TECH */
+@media (min-width: 769px) {
+  .pwa-update-toast {
+    left: calc((100vw - var(--videos-desktop-nav-width, 260px)) / 2);
+    right: auto;
+    bottom: 28px;
+    width: min(400px, calc(100vw - 48px));
+    max-width: 400px;
+    flex-wrap: nowrap;
+    padding: 12px 14px;
+    border-radius: 16px;
+    gap: 10px;
+    z-index: 2147483000;
+    transform: translate(-50%, 120%);
+  }
+
+  .pwa-update-toast.pwa-update-toast--visible {
+    transform: translate(-50%, 0);
+  }
+
+  body:has(.videos-feed):has(.pwa-install-banner--visible) .pwa-update-toast,
+  body.videos-page:has(.pwa-install-banner--visible) .pwa-update-toast {
+    bottom: 96px;
+  }
+
+  .pwa-update-toast__content {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .pwa-update-toast__subtitle {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .pwa-update-toast__actions {
+    width: auto;
+    margin-inline-start: 0;
+    flex-shrink: 0;
+  }
+
+  .pwa-update-toast__later,
+  .pwa-update-toast__now {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 420px) {
+  .pwa-update-toast__actions {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .pwa-update-toast__later,
+  .pwa-update-toast__now {
+    flex: 1;
+    text-align: center;
+  }
+}
+
+/* ===== מודאל הנחיות התקנה (iOS/Firefox) ===== */
+.pwa-install-dialog {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100000;
+  padding: 20px;
+  direction: rtl;
+}
+
+.pwa-install-dialog[open] {
+  display: flex;
+}
+
+.pwa-install-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.78);
+}
+
+.pwa-install-dialog__content {
+  background: linear-gradient(160deg, #0c0c12 0%, #07070a 100%);
+  border-radius: 18px;
+  padding: 24px;
+  max-width: 400px;
+  width: 100%;
+  color: #fff;
+  text-align: center;
+  border: 1px solid rgba(37, 244, 238, 0.25);
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.55),
+    0 0 24px rgba(37, 244, 238, 0.1);
+}
+
+.pwa-install-dialog__logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: contain;
+  margin: 0 auto 14px;
+  display: block;
+  background: #050508;
+  border: 1px solid rgba(37, 244, 238, 0.35);
+  box-shadow:
+    0 0 0 1px rgba(254, 44, 85, 0.22),
+    0 0 16px rgba(37, 244, 238, 0.28),
+    0 0 20px rgba(254, 44, 85, 0.16);
+  animation: pwa-logo-pulse 2.4s ease-in-out infinite;
+}
+
+.pwa-install-dialog__lead {
+  margin: -8px 0 4px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.65);
+  line-height: 1.4;
+}
+
+.pwa-install-dialog__content h2 {
+  margin: 0 0 20px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.pwa-install-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 20px 0;
+  text-align: right;
+}
+
+.pwa-install-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.pwa-install-step__number {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, var(--pwa-neon-cyan), var(--pwa-neon-pink));
+  color: #050508;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.pwa-install-step span:last-child {
+  font-size: 14px;
+  line-height: 1.5;
+  padding-top: 4px;
+}
+
+.pwa-install-note {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.72);
+  margin: 20px 0;
+  padding: 12px;
+  background: rgba(37, 244, 238, 0.08);
+  border: 1px solid rgba(37, 244, 238, 0.18);
+  border-radius: 10px;
+}
+
+.pwa-install-dialog__close {
+  background: linear-gradient(135deg, var(--pwa-neon-cyan) 0%, var(--pwa-neon-pink) 100%);
+  color: #050508;
+  border: none;
+  padding: 12px 32px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+  margin-top: 8px;
+  box-shadow:
+    0 0 12px rgba(37, 244, 238, 0.3),
+    0 0 16px rgba(254, 44, 85, 0.22);
+}
+
+.pwa-install-dialog__close:hover {
+  filter: brightness(1.08);
+}
+
+/* ===== מודאל התראות חכמות (ppm) – לוגו S + ניאון כמו LoadNug | HYPER CORE TECH */
+.ppm-modal,
+#push-permission-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+.ppm-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.ppm-content {
+  position: relative;
+  background: linear-gradient(160deg, rgba(10, 10, 14, 0.98) 0%, rgba(7, 7, 10, 0.98) 100%);
+  border-radius: 20px;
+  padding: 24px 20px 20px;
+  max-width: 380px;
+  width: 100%;
+  box-shadow:
+    0 16px 40px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(254, 44, 85, 0.12),
+    0 0 28px rgba(37, 244, 238, 0.12);
+  direction: rtl;
+  text-align: center;
+  border: 1px solid rgba(37, 244, 238, 0.28);
+  overflow: hidden;
+}
+
+.ppm-content::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--pwa-neon-pink), var(--pwa-neon-green), var(--pwa-neon-cyan));
+  animation: pwa-neon-scan 3.2s linear infinite;
+  pointer-events: none;
+}
+
+.ppm-logo {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  object-fit: contain;
+  background: #050508;
+  border: 1px solid rgba(37, 244, 238, 0.4);
+  box-shadow:
+    0 0 0 1px rgba(254, 44, 85, 0.22),
+    0 0 16px rgba(37, 244, 238, 0.28),
+    0 0 22px rgba(254, 44, 85, 0.2);
+  animation: pwa-logo-pulse 2.4s ease-in-out infinite;
+  display: block;
+}
+
+.ppm-status-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+}
+
+.ppm-status-icon--error {
+  background: rgba(254, 44, 85, 0.15);
+  border: 1px solid rgba(254, 44, 85, 0.4);
+  color: #ff7a90;
+}
+
+.ppm-content h3 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #fff;
+}
+
+.ppm-lead {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.9rem;
+  margin: 0 0 18px;
+  line-height: 1.4;
+}
+
+.ppm-bullets {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 22px;
+  text-align: right;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ppm-bullets li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.88);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ppm-bullets li:last-child {
+  border-bottom: none;
+}
+
+.ppm-bullet-icon {
+  flex-shrink: 0;
+  width: 1.4em;
+  text-align: center;
+}
+
+.ppm-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.ppm-btn {
+  flex: 1;
+  padding: 13px 14px;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  transition: filter 0.2s, box-shadow 0.2s, background 0.2s, transform 0.15s;
+}
+
+.ppm-btn:active {
+  transform: scale(0.97);
+}
+
+.ppm-btn--later {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.ppm-btn--later:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.ppm-btn--enable {
+  background: linear-gradient(135deg, var(--pwa-neon-cyan) 0%, var(--pwa-neon-pink) 100%);
+  color: #050508;
+  font-weight: 800;
+  box-shadow:
+    0 0 12px rgba(37, 244, 238, 0.32),
+    0 0 18px rgba(254, 44, 85, 0.25);
+}
+
+.ppm-btn--enable:hover {
+  filter: brightness(1.08);
+}
+
+.ppm-btn--enable:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.ppm-step p {
+  font-size: 0.95rem;
+  color: #fff;
+  margin: 0;
+}
+
+.ppm-error-msg {
+  color: #ff8a9a !important;
+  line-height: 1.45;
+}
+
+@media (min-width: 769px) {
+  .ppm-modal,
+  #push-permission-modal {
+    align-items: center;
+  }
+}
+
+/* ===== מודאל בקשת הרשאות Push (legacy class names) ===== */
+.push-permission-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100000;
+  padding: 20px;
+  direction: rtl;
+}
+
+.push-permission-modal[open] {
+  display: flex;
+}
+
+.push-permission-modal::backdrop {
+  background: rgba(0, 0, 0, 0.78);
+}
+
+.push-permission-modal__content {
+  background: linear-gradient(160deg, #0c0c12 0%, #07070a 100%);
+  border-radius: 20px;
+  padding: 32px 24px;
+  max-width: 380px;
+  width: 100%;
+  color: #fff;
+  text-align: center;
+  border: 1px solid rgba(37, 244, 238, 0.25);
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 24px rgba(37, 244, 238, 0.1);
+}
+
+.push-permission-modal__icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.push-permission-modal__content h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.push-permission-modal__content p {
+  margin: 0 0 24px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+  line-height: 1.6;
+}
+
+.push-permission-modal__actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.push-permission-modal__later {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 12px 24px;
+  border-radius: 999px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.push-permission-modal__later:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.push-permission-modal__enable {
+  background: linear-gradient(135deg, var(--pwa-neon-cyan) 0%, var(--pwa-neon-pink) 100%);
+  color: #050508;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: filter 0.2s, box-shadow 0.2s;
+  box-shadow:
+    0 0 12px rgba(37, 244, 238, 0.3),
+    0 0 16px rgba(254, 44, 85, 0.22);
+}
+
+.push-permission-modal__enable:hover {
+  filter: brightness(1.08);
+}
+
+/* ===== כרטיסיית בחירת התקנה (PC / Android / iPhone) ===== */
+.pwa-install-chooser {
+  position: fixed;
+  inset: 0;
+  z-index: 100050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  direction: rtl;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.28s ease;
+}
+
+.pwa-install-chooser--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pwa-install-chooser__overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(37, 244, 238, 0.12), transparent 55%),
+    radial-gradient(ellipse at 80% 80%, rgba(254, 44, 85, 0.14), transparent 50%),
+    rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.pwa-install-chooser__card {
+  position: relative;
+  width: min(420px, 100%);
+  background:
+    linear-gradient(165deg, rgba(14, 14, 22, 0.98) 0%, rgba(6, 6, 10, 0.99) 100%);
+  border-radius: 22px;
+  padding: 28px 22px 22px;
+  border: 1px solid rgba(37, 244, 238, 0.28);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.65),
+    0 0 28px rgba(37, 244, 238, 0.12),
+    0 0 36px rgba(254, 44, 85, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  text-align: center;
+  transform: translateY(18px) scale(0.96);
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow: hidden;
+}
+
+.pwa-install-chooser--visible .pwa-install-chooser__card {
+  transform: translateY(0) scale(1);
+}
+
+.pwa-install-chooser__card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, var(--pwa-neon-pink), var(--pwa-neon-green), var(--pwa-neon-cyan));
+  opacity: 0.95;
+  animation: pwa-neon-scan 3.2s linear infinite;
+  pointer-events: none;
+}
+
+.pwa-install-chooser__close {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.75);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.pwa-install-chooser__close:hover {
+  background: rgba(254, 44, 85, 0.18);
+  border-color: rgba(254, 44, 85, 0.4);
+  color: #fff;
+}
+
+.pwa-install-chooser__logo {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  object-fit: contain;
+  margin: 0 auto 14px;
+  display: block;
+  background: #050508;
+  border: 1px solid rgba(37, 244, 238, 0.4);
+  box-shadow:
+    0 0 0 1px rgba(254, 44, 85, 0.25),
+    0 0 18px rgba(37, 244, 238, 0.3),
+    0 0 22px rgba(254, 44, 85, 0.2);
+  animation: pwa-logo-pulse 2.4s ease-in-out infinite;
+}
+
+.pwa-install-chooser__title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  background: linear-gradient(90deg, #fff 20%, var(--pwa-neon-cyan) 55%, var(--pwa-neon-pink) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.pwa-install-chooser__lead {
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.pwa-install-chooser__options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.pwa-install-chooser__option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: right;
+  padding: 14px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(37, 244, 238, 0.18);
+  background:
+    linear-gradient(135deg, rgba(37, 244, 238, 0.06) 0%, rgba(254, 44, 85, 0.05) 100%);
+  color: #fff;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.pwa-install-chooser__option:hover,
+.pwa-install-chooser__option:focus-visible {
+  outline: none;
+  border-color: rgba(37, 244, 238, 0.45);
+  background:
+    linear-gradient(135deg, rgba(37, 244, 238, 0.12) 0%, rgba(254, 44, 85, 0.1) 100%);
+  box-shadow:
+    0 0 0 1px rgba(254, 44, 85, 0.15),
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    0 0 18px rgba(37, 244, 238, 0.12);
+  transform: translateY(-1px);
+}
+
+.pwa-install-chooser__option-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: var(--pwa-neon-cyan);
+  background: rgba(5, 5, 8, 0.85);
+  border: 1px solid rgba(37, 244, 238, 0.28);
+  box-shadow: 0 0 12px rgba(37, 244, 238, 0.15);
+}
+
+.pwa-install-chooser__option[data-install-target="android"] .pwa-install-chooser__option-icon {
+  color: var(--pwa-neon-green);
+  border-color: rgba(57, 255, 20, 0.3);
+  box-shadow: 0 0 12px rgba(57, 255, 20, 0.15);
+}
+
+.pwa-install-chooser__option[data-install-target="ios"] .pwa-install-chooser__option-icon {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 0 12px rgba(254, 44, 85, 0.12);
+}
+
+.pwa-install-chooser__option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pwa-install-chooser__option-title {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.pwa-install-chooser__option-sub {
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.pwa-install-chooser__badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #050508;
+  background: linear-gradient(135deg, var(--pwa-neon-cyan), var(--pwa-neon-pink));
+  box-shadow: 0 0 10px rgba(37, 244, 238, 0.25);
+}
+
+.pwa-install-chooser__note {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.4;
+}
+
+/* ===== התאמות מובייל ===== */
+@media (max-width: 480px) {
+  .pwa-install-banner {
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+  }
+
+  .pwa-install-chooser__card {
+    padding: 24px 16px 18px;
+  }
+
+  .pwa-install-chooser__title {
+    font-size: 20px;
+  }
+
+  .pwa-install-chooser__option {
+    padding: 12px;
+  }
+
+  .pwa-install-banner__icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .pwa-install-banner__text strong {
+    font-size: 14px;
+  }
+
+  .pwa-install-banner__text span {
+    font-size: 12px;
+  }
+
+  .pwa-install-banner__install {
+    padding: 8px 16px;
+    font-size: 13px;
+  }
+
+  .push-permission-modal__actions {
+    flex-direction: column;
+  }
+
+  .push-permission-modal__later,
+  .push-permission-modal__enable {
+    width: 100%;
+  }
+}

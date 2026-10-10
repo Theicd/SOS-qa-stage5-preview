@@ -1,0 +1,2409 @@
+/**
+ * חלק צ'אט (chat-desktop-sos-cyber.css) – SOS Cyber/Network premium | HYPER CORE TECH
+ * דסקטופ: min-width 769px | מובייל: יישור קו לשיחה פנימית בסוף הקובץ (max-width 768px)
+ */
+@media (min-width: 769px) {
+  .chat-panel {
+    --sos-bg: #030a14;
+    --sos-panel: rgba(6, 18, 32, 0.78);
+    --sos-electric: #00afff;
+    --sos-deep: #0868ff;
+    --sos-red: #ff304f;
+    --sos-green: #25e47a;
+    --sos-yellow: #ffc928;
+    --sos-text: #f4f7fb;
+    --sos-muted: #8fa2b7;
+    --sos-border: rgba(40, 170, 255, 0.35);
+    --wa-bg-color: var(--sos-bg);
+    --wa-header-color: rgba(6, 18, 32, 0.92);
+    --wa-panel-header-icon: var(--sos-muted);
+    --wa-search-bg: rgba(3, 10, 20, 0.72);
+    --wa-compose-input-bg: rgba(6, 18, 32, 0.55);
+    --wa-primary-text: var(--sos-text);
+    --wa-secondary-text: var(--sos-muted);
+    --wa-incoming-bg: #141820;
+    --wa-outgoing-bg: #1a3a5c;
+    --wa-system-message-bg: rgba(6, 18, 32, 0.88);
+    --wa-badge-color: var(--sos-red);
+    --wa-icon-color: var(--sos-muted);
+    --wa-border-color: var(--sos-border);
+    --wa-hover-bg: rgba(0, 175, 255, 0.08);
+    --wa-active-chat-bg: rgba(8, 104, 255, 0.16);
+  }
+
+  .chat-panel {
+    background: var(--sos-bg) !important;
+  }
+
+  .chat-panel .chat-panel__body {
+    background: var(--sos-bg) !important;
+  }
+
+  /* סרגל אייקונים ימין – שחור אחיד כמו דף הבית; כחול רק בזוהר/גבול | HYPER CORE TECH */
+  .chat-panel .chat-nav-sidebar {
+    background: #000 !important;
+    border-inline-start: 1px solid rgba(40, 170, 255, 0.22);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    padding: 20px 0 !important;
+  }
+
+  .chat-panel .chat-nav-sidebar__top,
+  .chat-panel .chat-nav-sidebar__bottom {
+    gap: 18px !important;
+  }
+
+  .chat-panel .chat-nav-item {
+    position: relative !important;
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: rgba(180, 196, 214, 0.75) !important;
+    font-size: 1.4rem !important;
+    transition: color 0.18s ease, filter 0.18s ease !important;
+  }
+
+  /* SVG stroke-only – מסגרת דקה, בלי מילוי | HYPER CORE TECH */
+  .chat-panel .chat-nav-icon {
+    width: 1.35rem !important;
+    height: 1.35rem !important;
+    display: block;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: none;
+  }
+
+  /* 4 עליונים (בית/פעמון/צ'אט/משחקים) – +30% | HYPER CORE TECH */
+  .chat-panel .chat-nav-sidebar__top .chat-nav-item {
+    width: 52px !important;
+    height: 52px !important;
+  }
+
+  .chat-panel .chat-nav-sidebar__top .chat-nav-icon {
+    width: 1.75rem !important;
+    height: 1.75rem !important;
+    stroke-width: 1.55;
+  }
+
+  .chat-panel .chat-nav-icon .nav-dot {
+    fill: currentColor !important;
+    stroke: none !important;
+  }
+
+  .chat-panel .chat-nav-item:hover {
+    transform: none;
+    color: #e8eef6 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  .chat-panel .chat-nav-item:hover .chat-nav-icon {
+    filter: drop-shadow(0 0 4px rgba(0, 175, 255, 0.35));
+  }
+
+  .chat-panel .chat-nav-item.is-active {
+    color: #00afff !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  .chat-panel .chat-nav-item.is-active .chat-nav-icon {
+    filter:
+      drop-shadow(0 0 3px rgba(0, 175, 255, 0.95))
+      drop-shadow(0 0 8px rgba(0, 175, 255, 0.7))
+      drop-shadow(0 0 14px rgba(0, 175, 255, 0.4));
+  }
+
+  .chat-panel .chat-nav-item.is-active::before {
+    content: '';
+    position: absolute;
+    right: -12px;
+    left: auto;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 26px;
+    width: 3px;
+    background: #00afff;
+    border-radius: 2px;
+    box-shadow: 0 0 10px rgba(0, 175, 255, 0.9);
+  }
+
+  /* דף הבית – מסגרת אדומה Neon (outline) כמו בדוגמה | HYPER CORE TECH */
+  .chat-panel .chat-nav-item#chatNavHome {
+    color: #ff304f !important;
+    text-shadow: none !important;
+  }
+
+  .chat-panel .chat-nav-item#chatNavHome .chat-nav-icon {
+    filter:
+      drop-shadow(0 0 3px rgba(255, 48, 79, 0.95))
+      drop-shadow(0 0 8px rgba(255, 48, 79, 0.75))
+      drop-shadow(0 0 14px rgba(255, 48, 79, 0.4));
+  }
+
+  .chat-panel .chat-nav-item#chatNavHome:hover {
+    color: #ff5a73 !important;
+    text-shadow: none !important;
+  }
+
+  .chat-panel .chat-nav-item#chatNavHome:hover .chat-nav-icon {
+    filter:
+      drop-shadow(0 0 4px rgba(255, 48, 79, 1))
+      drop-shadow(0 0 10px rgba(255, 48, 79, 0.85));
+  }
+
+  .chat-panel .chat-nav-item#chatNavHome.is-active {
+    color: #ff304f !important;
+    text-shadow: none !important;
+  }
+
+  .chat-panel .chat-nav-item#chatNavHome.is-active .chat-nav-icon {
+    filter:
+      drop-shadow(0 0 3px rgba(255, 48, 79, 1))
+      drop-shadow(0 0 9px rgba(255, 48, 79, 0.9))
+      drop-shadow(0 0 16px rgba(255, 48, 79, 0.5));
+  }
+
+  .chat-panel .chat-nav-item#chatNavHome.is-active::before {
+    background: #ff304f;
+    box-shadow: 0 0 10px rgba(255, 48, 79, 0.95);
+  }
+
+  .chat-panel .chat-nav-profile {
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 50%;
+    border: none !important;
+    box-shadow: none !important;
+    overflow: hidden;
+    background: transparent !important;
+  }
+
+  .chat-panel .chat-nav-profile img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* סיידבר רשימה – שחור אחיד עם תפריט הצד (פחות כחול, כמו דף הבית) | HYPER CORE TECH */
+  .chat-panel .chat-contacts {
+    background: #000 !important;
+    border-inline-start: 1px solid rgba(0, 200, 255, 0.65) !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .chat-panel .chat-sidebar-header {
+    background:
+      linear-gradient(145deg, rgba(8, 12, 20, 0.99) 0%, rgba(3, 8, 16, 1) 48%, rgba(10, 14, 22, 0.98) 100%) !important;
+    background-color: #05070c !important;
+    /* פס מתחת ללוגו – עדין יותר | HYPER CORE TECH */
+    border-bottom: 1px solid rgba(40, 170, 255, 0.22);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      inset 0 -12px 22px rgba(0, 0, 0, 0.45);
+    padding: 6px 12px !important;
+    height: 56px !important;
+    min-height: 56px !important;
+  }
+
+  .chat-panel .chat-sidebar-header__logo img {
+    height: 42px !important;
+    max-height: 42px !important;
+    width: auto !important;
+    max-width: min(260px, 100%) !important;
+  }
+
+  .chat-panel .chat-contacts__list {
+    background: transparent !important;
+    padding: 4px 0 12px !important;
+    gap: 0 !important;
+  }
+
+  /* חיפוש – מסגרת מעוגלת (כמו הדוגמה), אייקון בתוך המסגרת | HYPER CORE TECH */
+  .chat-panel .chat-contacts__search {
+    background: transparent !important;
+    padding: 8px 12px !important;
+    border-radius: 0 !important;
+  }
+
+  .chat-panel .chat-contacts__search-bar {
+    width: 100% !important;
+    margin: 0 !important;
+    min-height: 40px;
+    height: 40px !important;
+    padding: 0 16px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px;
+    box-sizing: border-box;
+    background: rgba(3, 10, 20, 0.78) !important;
+    color: var(--sos-text) !important;
+    border: 1px solid var(--sos-border) !important;
+    border-radius: 999px !important;
+    box-shadow:
+      0 0 0 1px rgba(255, 48, 79, 0.12),
+      0 0 18px rgba(0, 175, 255, 0.08);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .chat-panel .chat-contacts__search-bar:focus-within {
+    border-color: var(--sos-electric) !important;
+    box-shadow:
+      0 0 0 1px rgba(255, 48, 79, 0.22),
+      0 0 22px rgba(0, 175, 255, 0.25);
+  }
+
+  .chat-panel .chat-contacts__search-bar > i.fa-magnifying-glass {
+    color: var(--sos-muted) !important;
+    font-size: 1rem !important;
+    margin: 0 !important;
+    flex-shrink: 0;
+    order: 0;
+  }
+
+  .chat-panel .chat-contacts__search-bar > i.fa-filter {
+    display: none !important;
+  }
+
+  .chat-panel .chat-contacts__search input,
+  .chat-panel #chatSearchInput {
+    background: transparent !important;
+    color: var(--sos-text) !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    flex: 1 1 auto !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: 100% !important;
+    text-align: center !important;
+  }
+
+  .chat-panel .chat-contacts__search input:focus,
+  .chat-panel #chatSearchInput:focus {
+    outline: none !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  .chat-panel .chat-contacts__search input::placeholder,
+  .chat-panel #chatSearchInput::placeholder {
+    color: var(--sos-muted) !important;
+    text-align: center !important;
+  }
+
+  /* ארכיון בדסקטופ – שורה מתחת לחיפוש (עיצוב כמו מובייל; ניווט יבוא בהמשך) | HYPER CORE TECH */
+  .chat-panel .chat-contacts__archive {
+    display: flex !important;
+    padding: 10px 16px !important;
+    gap: 8px !important;
+    color: var(--sos-muted) !important;
+    border-bottom: 1px solid rgba(40, 170, 255, 0.12) !important;
+    background: transparent !important;
+  }
+
+  .chat-panel.chat-panel--archive-view .chat-contacts__archive,
+  .chat-panel .chat-contacts--archive-view .chat-contacts__archive,
+  .chat-panel .chat-contacts__archive[hidden] {
+    display: none !important;
+  }
+
+  .chat-panel .chat-contacts__archive:hover,
+  .chat-panel .chat-contacts__archive:active {
+    background: rgba(0, 175, 255, 0.06) !important;
+    color: var(--sos-text) !important;
+  }
+
+  .chat-panel .chat-contacts__archive-main > i {
+    width: 48px !important;
+    font-size: 1.1rem !important;
+    color: var(--sos-muted) !important;
+  }
+
+  .chat-panel .chat-contacts__archive-label {
+    color: inherit !important;
+    font-size: 0.98rem !important;
+    font-weight: 500 !important;
+  }
+
+  .chat-panel .chat-contacts__archive-aside {
+    width: 28px !important;
+    height: 28px !important;
+    color: rgba(0, 175, 255, 0.85) !important;
+  }
+
+  .chat-panel .chat-contacts__archive-dot {
+    filter:
+      drop-shadow(0 0 4px rgba(0, 175, 255, 0.7))
+      drop-shadow(0 0 10px rgba(255, 48, 79, 0.28));
+  }
+
+  /* רשימת שיחות שטוחה – מפרידים עדינים שלא מגיעים לקצוות המסגרת | HYPER CORE TECH */
+  .chat-panel .chat-contact {
+    height: auto !important;
+    min-height: 72px;
+    margin: 0 !important;
+    padding: 12px 16px !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transform: none !important;
+    transition: background 0.15s ease !important;
+    position: relative;
+    overflow: visible;
+  }
+
+  .chat-panel .chat-contact::after {
+    content: '';
+    position: absolute;
+    left: 18px;
+    right: 18px;
+    bottom: 0;
+    height: 1px;
+    background: rgba(40, 170, 255, 0.12);
+    pointer-events: none;
+  }
+
+  .chat-panel .chat-contact:last-child::after {
+    display: none;
+  }
+
+  .chat-panel .chat-contact__body {
+    border-bottom: none !important;
+    height: auto !important;
+    padding: 0 !important;
+  }
+
+  .chat-panel .chat-contact:hover {
+    transform: none !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    background: rgba(0, 175, 255, 0.06) !important;
+  }
+
+  .chat-panel .chat-contact--active {
+    background: rgba(8, 104, 255, 0.14) !important;
+    border: none !important;
+    background-image: none !important;
+    box-shadow: inset -3px 0 0 #00afff !important;
+  }
+
+  .chat-panel .chat-contact--active:last-child {
+    border-bottom: none !important;
+  }
+
+  .chat-panel .chat-contact__name {
+    color: var(--sos-text) !important;
+    font-weight: 700 !important;
+    text-shadow: none;
+  }
+
+  .chat-panel .chat-contact__last-message {
+    color: var(--sos-muted) !important;
+  }
+
+  .chat-panel .chat-contact__time {
+    font-weight: 600;
+  }
+
+  .chat-panel .chat-contact__time--normal {
+    color: var(--sos-electric) !important;
+  }
+
+  .chat-panel .chat-contact__time--active {
+    color: var(--sos-red) !important;
+  }
+
+  .chat-panel .chat-contact__time--online {
+    color: var(--sos-green) !important;
+  }
+
+  .chat-panel .chat-contact__time--old {
+    color: var(--sos-yellow) !important;
+  }
+
+  .chat-panel .chat-contact__status--read,
+  .chat-panel .chat-contact__status--read i,
+  .chat-panel .chat-message__status--read,
+  .chat-panel .chat-message__status--read i {
+    color: #53bdeb !important;
+  }
+
+  .chat-panel .chat-contact__status--sent,
+  .chat-panel .chat-contact__status--sent i {
+    color: rgba(0, 175, 255, 0.7) !important;
+  }
+
+  .chat-panel .chat-contact__badge {
+    background: var(--sos-red) !important;
+    color: #fff !important;
+    border-radius: 999px !important;
+    box-shadow: 0 0 12px rgba(255, 48, 79, 0.45);
+  }
+
+  .chat-panel .chat-contact__avatar {
+    position: relative;
+    border: 1px solid var(--sos-border) !important;
+  }
+
+  /* P2P – מנורה ירוקה בלבד (בלי מסגרת מסביב) כמו הדוגמה | HYPER CORE TECH */
+  .chat-panel .chat-contact__avatar--p2p {
+    overflow: visible !important;
+    border-color: var(--sos-border) !important;
+    box-shadow: none !important;
+  }
+
+  .chat-panel .chat-contact__avatar--p2p::after {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--sos-green);
+    box-shadow: 0 0 8px rgba(37, 228, 122, 0.85);
+    border: 2px solid #000;
+    inset-inline-start: 0;
+    bottom: 0;
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  /* אזור שיחה + רקע עיר/רשת שקט */
+  .chat-panel .chat-conversation {
+    background-color: var(--sos-bg) !important;
+    background-image:
+      linear-gradient(180deg, rgba(3, 10, 20, 0.42) 0%, rgba(3, 10, 20, 0.62) 100%),
+      url('../icons/chat-desktop-cyber-bg.png') !important;
+    background-repeat: no-repeat !important;
+    background-size: cover !important;
+    background-position: center !important;
+  }
+
+  .chat-panel .chat-conversation__header {
+    background: #000 !important;
+    border-bottom: 1px solid var(--sos-border) !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .chat-panel .chat-conversation__name {
+    color: var(--sos-text) !important;
+    font-weight: 700 !important;
+  }
+
+  .chat-panel .chat-conversation__status {
+    color: var(--sos-muted) !important;
+  }
+
+  /* תמונות אופקיות בדסקטופ – רוחב מ־JS (~360 כמו וואטסאפ) | HYPER CORE TECH */
+  .chat-panel .chat-message__image-container--landscape,
+  .chat-panel .chat-message__image-container--natural,
+  .chat-panel .chat-message__image-container[data-natural-fit="1"],
+  .chat-panel .chat-message__image-container[data-fit-mode="contain"],
+  .chat-panel .chat-media-upload--landscape[data-media-ready="1"],
+  .chat-panel .chat-media-upload[data-natural-fit="1"][data-media-ready="1"] {
+    max-width: 360px !important;
+    min-width: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: hidden !important;
+    box-sizing: border-box !important;
+  }
+
+  .chat-panel .chat-message:has(.chat-message__image-container--landscape),
+  .chat-panel .chat-message:has(.chat-message__image-container--natural),
+  .chat-panel .chat-message:has([data-natural-fit="1"]),
+  .chat-panel .chat-message:has(.chat-media-upload--landscape),
+  .chat-panel .chat-message:has(.chat-message__content--media-caption) {
+    max-width: 420px !important;
+    min-width: 0 !important;
+    box-sizing: border-box !important;
+  }
+
+  /* תמונה+טקסט: מסגרת צמודה; רוחב = תמונה (JS) | HYPER CORE TECH */
+  .chat-panel .chat-message__content--media-caption {
+    padding: 0 0 4px !important;
+    max-width: 360px !important;
+    min-width: 0 !important;
+    align-items: stretch !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+  }
+
+  /* טקסט בלבד בדסקטופ: רוחב כמו וואטסאפ — בלי לגעת במובייל/מדיה | HYPER CORE TECH */
+  .chat-panel .chat-message {
+    max-width: 70% !important;
+  }
+
+  .chat-panel .chat-message--outgoing:not(:has(.chat-message__image-container)):not(:has(.chat-message__video-container)):not(:has(.chat-media-upload)):not(:has(.chat-audio-whatsapp)),
+  .chat-panel .chat-message--incoming:not(:has(.chat-message__image-container)):not(:has(.chat-message__video-container)):not(:has(.chat-media-upload)):not(:has(.chat-audio-whatsapp)) {
+    max-width: min(70%, 650px) !important;
+  }
+
+  .chat-panel .chat-message--outgoing:has(.chat-message__image-container),
+  .chat-panel .chat-message--outgoing:has(.chat-message__video-container),
+  .chat-panel .chat-message--outgoing:has(.chat-media-upload),
+  .chat-panel .chat-message--incoming:has(.chat-message__image-container),
+  .chat-panel .chat-message--incoming:has(.chat-message__video-container),
+  .chat-panel .chat-message--incoming:has(.chat-media-upload) {
+    max-width: min(78%, 420px) !important;
+  }
+
+  /* שעה בסוף שורת הטקסט (float) — כמו וואטסאפ, רק דסקטופ | HYPER CORE TECH */
+  .chat-panel .chat-message__content:has(> .chat-message__text):not(:has(.chat-audio-whatsapp)):not(:has(.chat-file-card)) {
+    display: block !important;
+  }
+
+  .chat-panel .chat-message__content > .chat-message__meta-row {
+    float: left !important;
+    display: inline-flex !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    margin: 0 6px 0 0 !important;
+    margin-inline-start: 0 !important;
+    margin-inline-end: 6px !important;
+    padding-inline: 0 !important;
+  }
+
+  .chat-panel .chat-message__content--media-caption .chat-message__meta-row {
+    float: left !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    margin: 0 6px 0 0 !important;
+    margin-inline-start: 0 !important;
+    margin-inline-end: 6px !important;
+    padding-inline: 0 !important;
+  }
+
+  .chat-panel .chat-message__content--media-caption .chat-message__text {
+    display: inline !important;
+    width: auto !important;
+    min-width: 0 !important;
+  }
+
+  .chat-panel .chat-message__content--media-caption .chat-message__image-container,
+  .chat-panel .chat-message__content--media-caption .chat-message__video-container,
+  .chat-panel .chat-message__content--media-caption .chat-media-upload,
+  .chat-panel .chat-message__content--media-caption .chat-message__image-container[data-natural-fit="1"],
+  .chat-panel .chat-message__content--media-caption .chat-media-upload[data-natural-fit="1"],
+  .chat-panel .chat-message__content--media-caption .chat-media-upload--landscape {
+    min-width: 0 !important;
+    align-self: stretch !important;
+    border-radius: 0 !important;
+  }
+
+  .chat-panel .chat-message__content--media-caption .chat-message__image,
+  .chat-panel .chat-message__content--media-caption .chat-media-upload__media {
+    border-radius: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    object-fit: contain !important;
+  }
+
+  .chat-panel .chat-message__image-container--landscape .chat-message__image,
+  .chat-panel .chat-message__image-container--natural .chat-message__image,
+  .chat-panel .chat-message__image-container[data-natural-fit="1"] .chat-message__image,
+  .chat-panel .chat-message__image-container[data-fit-mode="contain"] .chat-message__image,
+  .chat-panel .chat-media-upload--landscape[data-media-ready="1"] .chat-media-upload__media,
+  .chat-panel .chat-media-upload[data-natural-fit="1"][data-media-ready="1"] .chat-media-upload__media {
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    object-fit: contain !important;
+  }
+
+  /* אייקוני כותרת שיחה – stroke חלול + זוהר; גודל תואם להדר/אווטאר | HYPER CORE TECH */
+  .chat-panel .chat-conversation__icon,
+  .chat-panel .chat-conversation__actions button {
+    width: 40px;
+    height: 40px;
+    border-radius: 0 !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent !important;
+    border: none !important;
+    color: var(--sos-electric) !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    filter:
+      drop-shadow(0 0 3px rgba(0, 175, 255, 0.9))
+      drop-shadow(0 0 8px rgba(0, 175, 255, 0.55));
+  }
+
+  .chat-panel .chat-header-icon {
+    width: 28px !important;
+    height: 28px !important;
+    display: block;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 1.55;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* טלפון + וידאו – +30% מגודל הבסיס | HYPER CORE TECH */
+  .chat-panel .chat-conversation__icon--voice,
+  .chat-panel .chat-conversation__icon--video {
+    width: 44px;
+    height: 44px;
+  }
+
+  .chat-panel .chat-conversation__icon--voice .chat-header-icon,
+  .chat-panel .chat-conversation__icon--video .chat-header-icon {
+    width: 36px !important;
+    height: 36px !important;
+    stroke-width: 1.45;
+  }
+
+  /* נקודות בתפריט ⋮ – מילוי קטן בלבד | HYPER CORE TECH */
+  .chat-panel .chat-conversation__icon--menu .chat-header-icon circle {
+    fill: currentColor !important;
+    stroke: none !important;
+  }
+
+  .chat-panel .chat-conversation__icon:hover,
+  .chat-panel .chat-conversation__actions button:hover {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    color: #e8f7ff !important;
+    filter:
+      drop-shadow(0 0 4px rgba(0, 175, 255, 1))
+      drop-shadow(0 0 12px rgba(0, 175, 255, 0.7));
+  }
+
+  .chat-panel .chat-conversation__back {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--sos-text) !important;
+    filter: none;
+  }
+
+  /* Composer – שחור שקוף מאחורי הגלולה; בלי רצועה כחולה ובלי מסגרת כפולה | HYPER CORE TECH */
+  .chat-panel .chat-composer {
+    background: transparent !important;
+    border-top: none !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    gap: 12px !important;
+  }
+
+  .chat-panel .chat-composer__field {
+    background: rgba(0, 0, 0, 0.72) !important;
+    border: 1px solid var(--sos-border) !important;
+    border-radius: 999px !important;
+    box-shadow: 0 0 18px rgba(0, 175, 255, 0.1);
+    padding: 8px 16px !important;
+  }
+
+  .chat-panel .chat-composer__field:focus-within {
+    border-color: var(--sos-electric) !important;
+    box-shadow: 0 0 22px rgba(0, 175, 255, 0.22);
+  }
+
+  /* מבטל מסגרת פנימית של textarea (whatsapp-theme) כדי שהגלולה תצף | HYPER CORE TECH */
+  .chat-panel .chat-composer textarea {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .chat-panel .chat-composer__icon {
+    width: 38px !important;
+    height: 38px !important;
+    border-radius: 50%;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    background: rgba(6, 18, 32, 0.55);
+    border: 1px solid var(--sos-border);
+    color: var(--sos-electric) !important;
+  }
+
+  .chat-panel .chat-composer__icon:hover {
+    border-color: var(--sos-electric);
+    color: var(--sos-text) !important;
+    box-shadow: 0 0 14px rgba(0, 175, 255, 0.3);
+  }
+
+  .chat-panel .chat-composer__send {
+    background: rgba(6, 18, 32, 0.75) !important;
+    border: 1px solid var(--sos-border) !important;
+    color: var(--sos-electric) !important;
+    box-shadow:
+      0 0 12px rgba(0, 175, 255, 0.28),
+      inset 0 0 0 1px rgba(0, 175, 255, 0.1) !important;
+  }
+
+  .chat-panel .chat-composer__send:hover {
+    filter: none;
+    border-color: var(--sos-electric) !important;
+    color: #e8f7ff !important;
+    background: rgba(0, 175, 255, 0.12) !important;
+    box-shadow: 0 0 18px rgba(0, 175, 255, 0.4) !important;
+  }
+
+  .chat-panel .chat-composer__send i {
+    color: inherit !important;
+  }
+
+  .chat-panel .chat-composer__send.is-mic {
+    background: rgba(6, 18, 32, 0.7) !important;
+    border: 1px solid var(--sos-border) !important;
+    color: var(--sos-electric) !important;
+  }
+
+  /* כרטיסיית הקלטה קולית – סייבר כמו גלולת הקלט | HYPER CORE TECH */
+  .chat-panel .chat-voice-recording {
+    height: 56px !important;
+    background: rgba(3, 10, 20, 0.94) !important;
+    border: 1px solid var(--sos-border) !important;
+    border-radius: 999px !important;
+    margin: 0 8px 8px !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    gap: 10px !important;
+    padding: 0 10px !important;
+    box-shadow:
+      0 0 18px rgba(0, 175, 255, 0.18),
+      0 8px 24px rgba(0, 0, 0, 0.45) !important;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .chat-panel .chat-voice-recording__delete {
+    background: rgba(6, 18, 32, 0.7) !important;
+    border: 1px solid rgba(255, 48, 79, 0.45) !important;
+    color: #ff6b85 !important;
+    box-shadow: 0 0 10px rgba(255, 48, 79, 0.25) !important;
+  }
+
+  .chat-panel .chat-voice-recording__delete:hover {
+    background: rgba(255, 48, 79, 0.16) !important;
+    border-color: rgba(255, 48, 79, 0.75) !important;
+  }
+
+  .chat-panel .chat-voice-recording__waveform {
+    background: rgba(0, 175, 255, 0.08) !important;
+    border: 1px solid rgba(40, 170, 255, 0.25) !important;
+    border-radius: 999px !important;
+  }
+
+  .chat-panel .chat-voice-recording__bars span {
+    background: var(--sos-electric) !important;
+    box-shadow: 0 0 6px rgba(0, 175, 255, 0.55);
+  }
+
+  .chat-panel .chat-voice-recording__timer {
+    color: var(--sos-text) !important;
+  }
+
+  .chat-panel .chat-voice-recording__send {
+    background: rgba(6, 18, 32, 0.75) !important;
+    border: 1px solid var(--sos-border) !important;
+    color: var(--sos-electric) !important;
+    box-shadow:
+      0 0 12px rgba(0, 175, 255, 0.3),
+      inset 0 0 0 1px rgba(0, 175, 255, 0.1) !important;
+  }
+
+  .chat-panel .chat-voice-recording__send:hover {
+    background: rgba(0, 175, 255, 0.14) !important;
+    border-color: var(--sos-electric) !important;
+    color: #e8f7ff !important;
+  }
+
+  .chat-panel .chat-voice-recording__send i {
+    color: inherit !important;
+  }
+
+  /* כפתור טורנט/ענן ליד האטב – מוסתר (לא בשימוש) | HYPER CORE TECH */
+  .chat-panel .chat-composer__icon--torrent,
+  .chat-panel #chatTorrentSendButton {
+    display: none !important;
+  }
+
+  /* אווטאר בהודעות נכנסות – גודל ומרווח כמו מובייל; בקול נשאר האווטאר שבנגן | HYPER CORE TECH */
+  .chat-panel .chat-message--incoming {
+    gap: 8px !important;
+    align-items: flex-start !important;
+  }
+
+  .chat-panel .chat-message--incoming > .chat-message__avatar {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 40px !important;
+    height: 40px !important;
+  }
+
+  .chat-panel .chat-message--incoming:has(.chat-audio-whatsapp) > .chat-message__avatar {
+    display: none !important;
+  }
+
+  /* בועות – נכנסות אפור כהה יותר שמתאים לדף; יוצאות כמו מובייל | HYPER CORE TECH */
+  .chat-panel .chat-message--incoming .chat-message__content,
+  .chat-panel .chat-message--incoming .chat-message__bubble {
+    background: linear-gradient(135deg, #12161c 0%, #181c24 100%) !important;
+    background-color: #141820 !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  }
+
+  /* יוצאות – אותו מרקם זכוכית כמו נגן קול (בלי מדיה-בלבד) | HYPER CORE TECH */
+  .chat-panel .chat-message--outgoing .chat-message__content:not(.chat-message__content--image-only):not(.chat-message__content--video-only),
+  .chat-panel .chat-message--outgoing .chat-message__bubble {
+    background:
+      linear-gradient(145deg, rgba(26, 58, 92, 0.92) 0%, rgba(18, 42, 72, 0.96) 45%, rgba(35, 75, 110, 0.88) 100%) !important;
+    background-color: #1a3a5c !important;
+    border: 1px solid rgba(120, 200, 255, 0.45) !important;
+    box-shadow:
+      0 10px 28px rgba(0, 0, 0, 0.45),
+      0 0 22px rgba(0, 175, 255, 0.28),
+      inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      inset 0 -12px 26px rgba(0, 30, 55, 0.4) !important;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+
+  /* נגני קול – עיצוב סייבר גלובלי בסוף הקובץ (יוצא/נכנס) | HYPER CORE TECH */
+
+  /* Welcome desktop – מדויק לדוגמה: פינות רכות, כרטיסיות דקות, אייקון עם כנפיים | HYPER CORE TECH */
+  .chat-welcome-desktop {
+    background:
+      radial-gradient(ellipse 70% 45% at 50% 18%, rgba(0, 175, 255, 0.1), transparent 58%),
+      linear-gradient(180deg, rgba(3, 10, 20, 0.5), rgba(3, 10, 20, 0.78)),
+      url('../icons/chat-desktop-cyber-bg.png') center / cover no-repeat !important;
+    border-bottom: none !important;
+    color: var(--sos-text) !important;
+    gap: 16px;
+    padding: 32px 28px !important;
+    box-sizing: border-box;
+  }
+
+  .chat-welcome-desktop__card {
+    background: rgba(8, 20, 36, 0.62) !important;
+    border: 1px solid rgba(0, 200, 255, 0.55) !important;
+    border-radius: 28px !important;
+    box-shadow:
+      0 12px 40px rgba(0, 0, 0, 0.35),
+      0 0 0 1px rgba(0, 175, 255, 0.08),
+      0 0 36px rgba(0, 175, 255, 0.18) !important;
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    max-width: 480px !important;
+    width: min(480px, 92%) !important;
+    padding: 26px 32px 28px !important;
+    margin-bottom: 0 !important;
+  }
+
+  .chat-welcome-desktop__icon {
+    margin: 2px auto 12px !important;
+    width: auto !important;
+    height: auto !important;
+  }
+
+  .chat-welcome-desktop__icon img {
+    display: none !important;
+  }
+
+  .chat-welcome-desktop__icon-deco {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    position: relative;
+  }
+
+  .chat-welcome-desktop__icon-wing {
+    width: 56px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0, 200, 255, 0.85));
+    box-shadow: 0 0 8px rgba(0, 175, 255, 0.55);
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .chat-welcome-desktop__icon-wing--left {
+    background: linear-gradient(90deg, transparent, rgba(0, 200, 255, 0.9));
+  }
+
+  .chat-welcome-desktop__icon-wing--left::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #00d4ff;
+    box-shadow: 0 0 8px #00afff;
+    transform: translate(-50%, -50%);
+  }
+
+  .chat-welcome-desktop__icon-wing--right {
+    background: linear-gradient(90deg, rgba(0, 200, 255, 0.9), transparent);
+  }
+
+  .chat-welcome-desktop__icon-wing--right::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #00d4ff;
+    box-shadow: 0 0 8px #00afff;
+    transform: translate(50%, -50%);
+  }
+
+  .chat-welcome-desktop__icon-ring {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    margin: 0 10px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(6, 16, 28, 0.95);
+    border: 1.5px solid rgba(0, 200, 255, 0.75);
+    box-shadow:
+      0 0 16px rgba(0, 175, 255, 0.45),
+      0 0 28px rgba(0, 175, 255, 0.22),
+      inset 0 0 12px rgba(0, 175, 255, 0.12);
+    color: #f0f8ff;
+    z-index: 1;
+  }
+
+  /* קשת אדומה-כתומה בחלק העליון-ימין כמו בדוגמה */
+  .chat-welcome-desktop__icon-orbit {
+    position: absolute;
+    inset: -7px;
+    border-radius: 50%;
+    pointer-events: none;
+    background: conic-gradient(
+      from 200deg,
+      transparent 0deg,
+      transparent 140deg,
+      rgba(255, 80, 60, 0.05) 160deg,
+      #ff5a3c 195deg,
+      #ff8a4a 220deg,
+      rgba(0, 200, 255, 0.35) 250deg,
+      transparent 280deg,
+      transparent 360deg
+    );
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+    filter: drop-shadow(0 0 4px rgba(255, 90, 60, 0.65));
+  }
+
+  .chat-welcome-icon {
+    width: 28px;
+    height: 28px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .chat-welcome-icon--hero {
+    width: 26px;
+    height: 26px;
+    stroke-width: 1.85;
+    filter: drop-shadow(0 0 6px rgba(0, 200, 255, 0.4));
+  }
+
+  .chat-welcome-icon--btn {
+    width: 17px;
+    height: 17px;
+    stroke-width: 2.1;
+  }
+
+  .chat-welcome-icon--action {
+    width: 38px !important;
+    height: 38px !important;
+    stroke-width: 1.55;
+  }
+
+  .chat-welcome-desktop__brand {
+    margin: 0 0 6px;
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: rgba(244, 247, 251, 0.88) !important;
+    letter-spacing: 0.15px;
+  }
+
+  .chat-welcome-desktop__title {
+    color: var(--sos-text) !important;
+    font-size: 1.42rem !important;
+    font-weight: 700 !important;
+    line-height: 1.4;
+    margin: 0 0 10px !important;
+  }
+
+  .chat-welcome-desktop__title-brand {
+    color: #00c8ff;
+    background: linear-gradient(90deg, #00afff, #4dd4ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 10px rgba(0, 175, 255, 0.45));
+  }
+
+  .chat-welcome-desktop__desc {
+    color: rgba(180, 198, 214, 0.92) !important;
+    font-size: 0.95rem !important;
+    line-height: 1.55;
+    margin: 0 auto 22px !important;
+    max-width: 380px;
+  }
+
+  .chat-welcome-desktop__install {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-width: 210px;
+    padding: 11px 32px !important;
+    background: linear-gradient(90deg, #0868ff 0%, #0098ff 50%, #00b4ff 100%) !important;
+    color: #fff !important;
+    box-shadow:
+      0 0 22px rgba(0, 160, 255, 0.55),
+      0 6px 18px rgba(0, 100, 255, 0.25);
+    border-radius: 999px !important;
+    border: none !important;
+    font-weight: 700;
+    font-size: 1rem;
+  }
+
+  .chat-welcome-desktop__install:hover {
+    background: linear-gradient(90deg, #00b4ff 0%, #0098ff 50%, #0868ff 100%) !important;
+    filter: brightness(1.06);
+  }
+
+  .chat-welcome-desktop__install.chat-welcome-desktop__uninstall {
+    background: linear-gradient(90deg, #ff304f, #0868ff) !important;
+  }
+
+  .chat-welcome-desktop__actions {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px !important;
+    width: min(480px, 92%);
+    margin: 0 !important;
+  }
+
+  .chat-welcome-desktop__action {
+    position: relative;
+    display: flex !important;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px !important;
+    min-height: 0 !important;
+    height: auto !important;
+    padding: 14px 28px 12px !important;
+    background: rgba(8, 20, 36, 0.55) !important;
+    border-radius: 18px !important;
+    color: var(--sos-text) !important;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+  }
+
+  .chat-welcome-desktop__action--new {
+    border: 1px solid rgba(37, 228, 122, 0.5) !important;
+    box-shadow:
+      0 4px 16px rgba(0, 0, 0, 0.22),
+      0 0 14px rgba(37, 228, 122, 0.14);
+  }
+
+  .chat-welcome-desktop__action--new .chat-welcome-icon--action {
+    color: #2eff9a;
+    filter: drop-shadow(0 0 10px rgba(37, 228, 122, 0.65));
+  }
+
+  .chat-welcome-desktop__action--unread {
+    border: 1px solid rgba(0, 200, 255, 0.5) !important;
+    box-shadow:
+      0 4px 16px rgba(0, 0, 0, 0.22),
+      0 0 14px rgba(0, 175, 255, 0.16);
+  }
+
+  .chat-welcome-desktop__action--unread .chat-welcome-icon--action {
+    color: #00c8ff;
+    filter: drop-shadow(0 0 10px rgba(0, 175, 255, 0.65));
+  }
+
+  .chat-welcome-desktop__action:hover {
+    transform: translateY(-1px);
+  }
+
+  .chat-welcome-desktop__action span {
+    font-size: 0.9rem !important;
+    font-weight: 600;
+    color: var(--sos-text) !important;
+    line-height: 1.25;
+  }
+
+  .chat-welcome-desktop__action-arrow {
+    position: absolute;
+    inset-inline-start: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.7rem !important;
+    color: rgba(143, 162, 183, 0.55) !important;
+  }
+
+  .chat-welcome-desktop__action i:not(.chat-welcome-desktop__action-arrow) {
+    display: none !important;
+  }
+
+  .chat-welcome-desktop__footer {
+    color: var(--sos-muted) !important;
+    margin: 2px 0 0 !important;
+    font-size: 0.85rem;
+  }
+
+  /* תפריט ⋮ דסקטופ – כהה + קווים מפרידים כמו תפריט דף הבית | HYPER CORE TECH */
+  .chat-panel .chat-conversation__menu {
+    direction: rtl !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 0 !important;
+    width: 240px !important;
+    min-width: 240px !important;
+    max-width: min(260px, calc(100vw - 24px)) !important;
+    padding: 6px 8px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(40, 170, 255, 0.28) !important;
+    background:
+      linear-gradient(145deg, rgba(8, 12, 20, 0.97) 0%, rgba(3, 10, 20, 0.98) 55%, rgba(12, 18, 28, 0.95) 100%) !important;
+    box-shadow:
+      0 10px 28px rgba(0, 0, 0, 0.55),
+      0 0 14px rgba(0, 175, 255, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      inset 0 -10px 22px rgba(0, 0, 0, 0.45) !important;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-sizing: border-box !important;
+  }
+
+  /* חובה אחרי display:flex – אחרת [hidden] נשאר גלוי במצב סגור | HYPER CORE TECH */
+  .chat-panel .chat-conversation__menu[hidden] {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 14px !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 10px 12px !important;
+    border: none !important;
+    border-bottom: 1px solid rgba(120, 200, 255, 0.12) !important;
+    border-radius: 8px !important;
+    background: transparent !important;
+    color: #e8f7ff !important;
+    text-align: start !important;
+    font-size: 0.95rem !important;
+    line-height: 1.25 !important;
+    box-sizing: border-box !important;
+    white-space: nowrap !important;
+  }
+
+  .chat-panel .chat-conversation__menu > .chat-conversation__menu-item:last-child {
+    border-bottom: none !important;
+  }
+
+  /* אחרי display:flex של הפריט – מובייל בלבד נשאר מוסתר בדסקטופ | HYPER CORE TECH */
+  .chat-panel .chat-conversation__menu-item--mobile-only {
+    display: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item--desktop-only {
+    display: flex !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item--desktop-only[hidden],
+  .chat-panel .chat-conversation__menu-item[hidden] {
+    display: none !important;
+    border-bottom: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item i {
+    order: 0 !important;
+    flex: 0 0 22px !important;
+    width: 22px !important;
+    min-width: 22px !important;
+    max-width: 22px !important;
+    height: 22px !important;
+    margin: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    font-size: 0.95rem !important;
+    color: #00afff !important;
+    opacity: 1 !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item span {
+    order: 1 !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    color: #e8f7ff !important;
+    font-weight: 400 !important;
+    letter-spacing: 0 !important;
+    text-align: start !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item:hover,
+  .chat-panel .chat-conversation__menu-item:focus-visible {
+    background: rgba(0, 175, 255, 0.14) !important;
+    outline: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item:active {
+    background: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  /* מצב ארכיון בדסקטופ – אותה סיידבר | HYPER CORE TECH */
+  .chat-panel .chat-contacts__archive-view-bar {
+    padding: 10px 16px !important;
+    border-bottom: 1px solid rgba(40, 170, 255, 0.12) !important;
+    color: var(--sos-text) !important;
+  }
+
+  .chat-panel .chat-contacts__archive-view-back {
+    color: var(--sos-electric) !important;
+  }
+
+  .chat-panel .chat-contacts__archive-view-back:hover {
+    background: rgba(0, 175, 255, 0.08) !important;
+  }
+
+  .chat-panel .chat-contacts__archive-view-title {
+    color: var(--sos-text) !important;
+  }
+
+  /* דיאלוג טיימר דסקטופ – ערפל + מסגרת זוהרת בלבד | HYPER CORE TECH */
+  .chat-panel .chat-desktop-timer-dialog {
+    position: absolute;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.62);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__panel {
+    position: relative;
+    width: min(420px, 100%);
+    max-height: none;
+    overflow: visible;
+    background: rgba(10, 16, 24, 0.72);
+    border: 1px solid rgba(0, 200, 255, 0.45);
+    border-radius: 16px;
+    box-shadow:
+      0 16px 48px rgba(0, 0, 0, 0.5),
+      0 0 22px rgba(0, 175, 255, 0.18);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    padding: 20px 22px 18px;
+    color: var(--sos-text);
+    box-sizing: border-box;
+    text-align: center;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    position: relative;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__title {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #e9edef;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__close {
+    position: absolute;
+    inset-inline-start: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 200, 255, 0.4);
+    background: rgba(0, 0, 0, 0.25);
+    color: var(--sos-muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 10px rgba(0, 175, 255, 0.2);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__close:hover {
+    color: var(--sos-text);
+    border-color: rgba(0, 200, 255, 0.7);
+    box-shadow: 0 0 14px rgba(0, 175, 255, 0.35);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__hint {
+    margin: 0 0 14px;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: #8696a0;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+    text-align: start;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(0, 200, 255, 0.28);
+    background: rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    color: var(--sos-text);
+    box-shadow: 0 0 10px rgba(0, 175, 255, 0.08);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__radio {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(0, 200, 255, 0.45);
+    flex-shrink: 0;
+    position: relative;
+    background: transparent;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option.is-selected {
+    border-color: rgba(0, 200, 255, 0.7);
+    background: rgba(0, 175, 255, 0.08);
+    box-shadow: 0 0 14px rgba(0, 175, 255, 0.22);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option.is-selected .chat-desktop-timer-dialog__radio {
+    border-color: #00c8ff;
+    box-shadow: 0 0 8px rgba(0, 200, 255, 0.55);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option.is-selected .chat-desktop-timer-dialog__radio::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: #00c8ff;
+    box-shadow: 0 0 6px rgba(0, 200, 255, 0.8);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__label {
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__btn {
+    flex: 1;
+    min-width: 100px;
+    padding: 11px 18px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 0.92rem;
+    background: rgba(0, 0, 0, 0.28);
+    color: #e9edef;
+    border: 1px solid rgba(0, 200, 255, 0.4);
+    box-shadow: 0 0 12px rgba(0, 175, 255, 0.16);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__btn--cancel:hover,
+  .chat-panel .chat-desktop-timer-dialog__btn--confirm:hover {
+    border-color: rgba(0, 200, 255, 0.75);
+    box-shadow: 0 0 18px rgba(0, 175, 255, 0.3);
+    background: rgba(0, 175, 255, 0.08);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__btn--confirm {
+    border-color: rgba(0, 200, 255, 0.55);
+    box-shadow: 0 0 16px rgba(0, 175, 255, 0.28);
+  }
+
+  /* דיאלוג ניקוי צ'אט – אותו שפת עיצוב: ערפל + זוהר מסגרת | HYPER CORE TECH */
+  .chat-panel .chat-dialog__backdrop {
+    background: rgba(0, 0, 0, 0.62) !important;
+    backdrop-filter: blur(4px) !important;
+    -webkit-backdrop-filter: blur(4px) !important;
+  }
+
+  .chat-panel .chat-dialog__content {
+    background: rgba(10, 16, 24, 0.72) !important;
+    border: 1px solid rgba(0, 200, 255, 0.45) !important;
+    border-radius: 16px !important;
+    color: var(--sos-text) !important;
+    box-shadow:
+      0 16px 48px rgba(0, 0, 0, 0.5),
+      0 0 22px rgba(0, 175, 255, 0.18) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+  }
+
+  .chat-panel .chat-dialog__title {
+    color: #e9edef !important;
+  }
+
+  .chat-panel .chat-dialog__message {
+    color: #8696a0 !important;
+  }
+
+  .chat-panel .chat-dialog__btn {
+    background: rgba(0, 0, 0, 0.28) !important;
+    color: #e9edef !important;
+    border: 1px solid rgba(0, 200, 255, 0.4) !important;
+    box-shadow: 0 0 12px rgba(0, 175, 255, 0.16) !important;
+  }
+
+  .chat-panel .chat-dialog__btn--cancel:hover {
+    border-color: rgba(0, 200, 255, 0.75) !important;
+    box-shadow: 0 0 18px rgba(0, 175, 255, 0.3) !important;
+    background: rgba(0, 175, 255, 0.08) !important;
+  }
+
+  .chat-panel .chat-dialog__btn--confirm {
+    border-color: rgba(255, 80, 80, 0.65) !important;
+    box-shadow: 0 0 16px rgba(255, 70, 70, 0.28) !important;
+    background: rgba(180, 40, 40, 0.18) !important;
+  }
+
+  .chat-panel .chat-dialog__btn--confirm:hover {
+    border-color: rgba(255, 100, 100, 0.85) !important;
+    box-shadow: 0 0 20px rgba(255, 70, 70, 0.4) !important;
+    background: rgba(200, 50, 50, 0.22) !important;
+  }
+}
+
+/**
+ * מובייל – יישור קו לסייבר בדף שיחה פנימי (הדר + קלט + תפריט) | HYPER CORE TECH
+ * לא נוגע בפריסת מגע/מקלדת; רק צבעים, זוהר ומבנה ויזואלי כמו הדסקטופ.
+ */
+@media (max-width: 768px) {
+  .chat-panel {
+    --sos-electric: #00afff;
+    --sos-deep: #0868ff;
+    --sos-red: #ff304f;
+    --sos-green: #25e47a;
+    --sos-yellow: #ffc928;
+    --sos-text: #f4f7fb;
+    --sos-muted: #8fa2b7;
+    --sos-border: rgba(40, 170, 255, 0.35);
+  }
+
+  /* רשימת שיחות – שטוחה כמו דסקטופ (בלי כרטיסים מעוגלים) | HYPER CORE TECH */
+  .chat-panel .chat-contacts {
+    background: #000 !important;
+  }
+
+  .chat-panel .chat-contacts__list {
+    background: transparent !important;
+    padding: 0 0 12px !important;
+    gap: 0 !important;
+  }
+
+  .chat-panel .chat-contacts__top {
+    background: #000 !important;
+    border-bottom: 1px solid rgba(40, 170, 255, 0.16) !important;
+  }
+
+  .chat-panel .chat-contacts__search,
+  .chat-panel .chat-contacts__top .chat-contacts__search {
+    background: transparent !important;
+  }
+
+  .chat-panel .chat-contacts__search-bar,
+  .chat-panel .chat-contacts__top .chat-contacts__search-bar {
+    background: rgba(3, 10, 20, 0.78) !important;
+    border: 1px solid var(--sos-border) !important;
+    border-radius: 999px !important;
+    box-shadow:
+      0 0 0 1px rgba(255, 48, 79, 0.1),
+      0 0 14px rgba(0, 175, 255, 0.08) !important;
+  }
+
+  .chat-panel .chat-contacts__archive {
+    background: transparent !important;
+    border-bottom: 1px solid rgba(40, 170, 255, 0.12) !important;
+    color: var(--sos-muted) !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  .chat-panel .chat-contacts__archive-view-bar {
+    background: #000 !important;
+    border-bottom: 1px solid rgba(40, 170, 255, 0.12) !important;
+    color: var(--sos-text) !important;
+  }
+
+  .chat-panel .chat-contact {
+    height: auto !important;
+    min-height: 72px !important;
+    margin: 0 !important;
+    margin-bottom: 0 !important;
+    padding: 12px 14px !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transform: none !important;
+    color: var(--sos-text) !important;
+    position: relative !important;
+    overflow: visible !important;
+  }
+
+  .chat-panel .chat-contact::after {
+    content: '' !important;
+    position: absolute !important;
+    left: 14px !important;
+    right: 14px !important;
+    bottom: 0 !important;
+    height: 1px !important;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(0, 175, 255, 0.15) 18%,
+      rgba(0, 175, 255, 0.55) 50%,
+      rgba(0, 175, 255, 0.15) 82%,
+      transparent 100%
+    ) !important;
+    background-size: 220% 100% !important;
+    animation: chatContactDividerSweep 7s ease-in-out infinite !important;
+    pointer-events: none !important;
+    display: block !important;
+  }
+
+  .chat-panel .chat-contact:last-child::after {
+    display: none !important;
+  }
+
+  .chat-panel,
+  .chat-panel .chat-contacts {
+    background: #000 !important;
+  }
+
+  .chat-panel .chat-contact__body {
+    border-bottom: none !important;
+    background: transparent !important;
+  }
+
+  .chat-panel .chat-contact:hover,
+  .chat-panel .chat-contact:active {
+    transform: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: rgba(0, 175, 255, 0.06) !important;
+  }
+
+  .chat-panel .chat-contact--active {
+    background: rgba(8, 104, 255, 0.14) !important;
+    border: none !important;
+    background-image: none !important;
+    box-shadow: inset -3px 0 0 #00afff !important;
+  }
+
+  .chat-panel .chat-contact__name {
+    color: var(--sos-text) !important;
+    font-weight: 700 !important;
+    text-shadow: none !important;
+  }
+
+  .chat-panel .chat-contact__last-message {
+    color: var(--sos-muted) !important;
+  }
+
+  .chat-panel .chat-contact__time {
+    font-weight: 600 !important;
+  }
+
+  .chat-panel .chat-contact__time--normal {
+    color: var(--sos-electric) !important;
+  }
+
+  .chat-panel .chat-contact__time--active {
+    color: var(--sos-red) !important;
+  }
+
+  .chat-panel .chat-contact__time--online {
+    color: var(--sos-green) !important;
+  }
+
+  .chat-panel .chat-contact__time--old {
+    color: var(--sos-yellow) !important;
+  }
+
+  /* הדר שיחה */
+  .chat-panel.chat-panel--conversation .chat-conversation__header {
+    background: #000 !important;
+    border-bottom: 1px solid rgba(40, 170, 255, 0.18) !important;
+  }
+
+  .chat-panel .chat-conversation__name {
+    color: var(--sos-text) !important;
+    font-weight: 700 !important;
+  }
+
+  .chat-panel .chat-conversation__status {
+    color: var(--sos-muted) !important;
+  }
+
+  .chat-panel .chat-conversation__icon,
+  .chat-panel .chat-conversation__actions button {
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--sos-electric) !important;
+    filter:
+      drop-shadow(0 0 3px rgba(0, 175, 255, 0.9))
+      drop-shadow(0 0 8px rgba(0, 175, 255, 0.55)) !important;
+  }
+
+  .chat-panel .chat-header-icon {
+    width: 26px !important;
+    height: 26px !important;
+    display: block;
+    fill: none !important;
+    stroke: currentColor !important;
+    stroke-width: 1.55;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .chat-panel .chat-conversation__icon--voice,
+  .chat-panel .chat-conversation__icon--video {
+    width: 42px !important;
+    height: 42px !important;
+  }
+
+  .chat-panel .chat-conversation__icon--voice .chat-header-icon,
+  .chat-panel .chat-conversation__icon--video .chat-header-icon {
+    width: 32px !important;
+    height: 32px !important;
+  }
+
+  .chat-panel .chat-conversation__icon--menu .chat-header-icon circle {
+    fill: currentColor !important;
+    stroke: none !important;
+  }
+
+  .chat-panel .chat-conversation__back {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--sos-text) !important;
+    filter: none !important;
+  }
+
+  /* Composer – גלולה שחורה + כפתורים זוהרים כמו דסקטופ | HYPER CORE TECH */
+  .chat-panel .chat-composer {
+    background: transparent !important;
+    border-top: none !important;
+    gap: 8px !important;
+  }
+
+  .chat-panel .chat-composer__field {
+    background: rgba(0, 0, 0, 0.78) !important;
+    border: 1px solid var(--sos-border) !important;
+    border-radius: 999px !important;
+    box-shadow: 0 0 16px rgba(0, 175, 255, 0.12) !important;
+    min-height: 52px !important;
+    padding: 6px 10px !important;
+  }
+
+  .chat-panel .chat-composer__field:focus-within {
+    border-color: var(--sos-electric) !important;
+    box-shadow: 0 0 20px rgba(0, 175, 255, 0.22) !important;
+  }
+
+  .chat-panel .chat-composer textarea {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: var(--sos-text) !important;
+  }
+
+  .chat-panel .chat-composer textarea::placeholder {
+    color: var(--sos-muted) !important;
+  }
+
+  .chat-panel .chat-composer__icon {
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 50% !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: rgba(6, 18, 32, 0.65) !important;
+    border: 1px solid var(--sos-border) !important;
+    color: var(--sos-electric) !important;
+    box-shadow:
+      0 0 8px rgba(0, 175, 255, 0.25),
+      inset 0 0 0 1px rgba(0, 175, 255, 0.08) !important;
+  }
+
+  .chat-panel .chat-composer__send {
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 50% !important;
+  }
+
+  .chat-panel .chat-composer__send.is-mic {
+    background: rgba(6, 18, 32, 0.7) !important;
+    border: 1px solid var(--sos-border) !important;
+    color: var(--sos-electric) !important;
+    box-shadow:
+      0 0 8px rgba(0, 175, 255, 0.25),
+      inset 0 0 0 1px rgba(0, 175, 255, 0.08) !important;
+  }
+
+  .chat-panel .chat-composer__send:not(.is-mic) {
+    background: rgba(6, 18, 32, 0.75) !important;
+    border: 1px solid var(--sos-border) !important;
+    color: var(--sos-electric) !important;
+    box-shadow:
+      0 0 12px rgba(0, 175, 255, 0.28),
+      inset 0 0 0 1px rgba(0, 175, 255, 0.1) !important;
+  }
+
+  .chat-panel .chat-composer__send i {
+    color: inherit !important;
+  }
+
+  /* כרטיסיית הקלטה – סייבר במובייל | HYPER CORE TECH */
+  .chat-panel .chat-voice-recording {
+    height: 56px !important;
+    background: rgba(3, 10, 20, 0.96) !important;
+    border: 1px solid var(--sos-border) !important;
+    border-radius: 999px !important;
+    margin: 0 6px 6px !important;
+    gap: 8px !important;
+    padding: 0 8px !important;
+    box-shadow:
+      0 0 16px rgba(0, 175, 255, 0.2),
+      0 8px 22px rgba(0, 0, 0, 0.45) !important;
+  }
+
+  .chat-panel .chat-voice-recording__delete {
+    background: rgba(6, 18, 32, 0.7) !important;
+    border: 1px solid rgba(255, 48, 79, 0.45) !important;
+    color: #ff6b85 !important;
+    box-shadow: 0 0 10px rgba(255, 48, 79, 0.22) !important;
+  }
+
+  .chat-panel .chat-voice-recording__waveform {
+    background: rgba(0, 175, 255, 0.08) !important;
+    border: 1px solid rgba(40, 170, 255, 0.25) !important;
+    border-radius: 999px !important;
+  }
+
+  .chat-panel .chat-voice-recording__bars span {
+    background: var(--sos-electric) !important;
+    box-shadow: 0 0 6px rgba(0, 175, 255, 0.55);
+  }
+
+  .chat-panel .chat-voice-recording__timer {
+    color: var(--sos-text) !important;
+  }
+
+  .chat-panel .chat-voice-recording__send {
+    background: rgba(6, 18, 32, 0.75) !important;
+    border: 1px solid var(--sos-border) !important;
+    color: var(--sos-electric) !important;
+    box-shadow:
+      0 0 12px rgba(0, 175, 255, 0.3),
+      inset 0 0 0 1px rgba(0, 175, 255, 0.1) !important;
+  }
+
+  .chat-panel .chat-voice-recording__send i {
+    color: inherit !important;
+  }
+
+  /* תפריט ⋮ – כהה + מפרידים כמו דף הבית (פורטל ל-body במובייל) | HYPER CORE TECH */
+  .chat-panel .chat-conversation__menu,
+  body > .chat-conversation__menu {
+    direction: rtl !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 0 !important;
+    width: min(240px, calc(100vw - 24px)) !important;
+    min-width: 200px !important;
+    padding: 6px 8px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(40, 170, 255, 0.28) !important;
+    background:
+      linear-gradient(145deg, rgba(8, 12, 20, 0.97) 0%, rgba(3, 10, 20, 0.98) 55%, rgba(12, 18, 28, 0.95) 100%) !important;
+    box-shadow:
+      0 10px 28px rgba(0, 0, 0, 0.55),
+      0 0 14px rgba(0, 175, 255, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      inset 0 -10px 22px rgba(0, 0, 0, 0.45) !important;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-sizing: border-box !important;
+  }
+
+  .chat-panel .chat-conversation__menu[hidden],
+  body > .chat-conversation__menu[hidden] {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item,
+  body > .chat-conversation__menu .chat-conversation__menu-item {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 14px !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 11px 12px !important;
+    border: none !important;
+    border-bottom: 1px solid rgba(120, 200, 255, 0.12) !important;
+    border-radius: 8px !important;
+    background: transparent !important;
+    color: #e8f7ff !important;
+    text-align: start !important;
+    box-sizing: border-box !important;
+  }
+
+  .chat-panel .chat-conversation__menu > .chat-conversation__menu-item:last-child,
+  body > .chat-conversation__menu > .chat-conversation__menu-item:last-child {
+    border-bottom: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item--desktop-only,
+  body > .chat-conversation__menu .chat-conversation__menu-item--desktop-only {
+    display: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item[hidden],
+  body > .chat-conversation__menu .chat-conversation__menu-item[hidden] {
+    display: none !important;
+    border-bottom: none !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item i,
+  body > .chat-conversation__menu .chat-conversation__menu-item i {
+    order: 0 !important;
+    flex: 0 0 22px !important;
+    width: 22px !important;
+    min-width: 22px !important;
+    text-align: center !important;
+    color: #00afff !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item span,
+  body > .chat-conversation__menu .chat-conversation__menu-item span {
+    order: 1 !important;
+    flex: 1 1 auto !important;
+    color: #e8f7ff !important;
+    font-weight: 400 !important;
+    text-align: start !important;
+  }
+
+  .chat-panel .chat-conversation__menu-item:active,
+  body > .chat-conversation__menu .chat-conversation__menu-item:active {
+    background: rgba(0, 175, 255, 0.2) !important;
+  }
+
+  /* דיאלוג טיימר ניקוי – גם במובייל (אותו UI כמו דסקטופ) | HYPER CORE TECH */
+  .chat-panel .chat-desktop-timer-dialog {
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 120 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 16px !important;
+    box-sizing: border-box !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__backdrop {
+    position: absolute !important;
+    inset: 0 !important;
+    background: rgba(0, 0, 0, 0.7) !important;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__panel {
+    position: relative !important;
+    width: min(420px, 100%) !important;
+    height: fit-content !important;
+    max-height: min(90vh, 640px) !important;
+    min-height: 0 !important;
+    overflow: auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-start !important;
+    align-self: center !important;
+    background: rgba(8, 12, 20, 0.96) !important;
+    border: 1px solid rgba(40, 170, 255, 0.35) !important;
+    border-radius: 16px !important;
+    box-shadow:
+      0 16px 48px rgba(0, 0, 0, 0.55),
+      0 0 16px rgba(0, 175, 255, 0.16) !important;
+    padding: 18px 16px 16px !important;
+    color: #e8f7ff !important;
+    box-sizing: border-box !important;
+    text-align: center !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 12px !important;
+    margin-bottom: 8px !important;
+    position: relative !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__title {
+    margin: 0 !important;
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+    color: #e8f7ff !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__close {
+    position: absolute !important;
+    inset-inline-start: 0 !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    width: 34px !important;
+    height: 34px !important;
+    border-radius: 50% !important;
+    border: 1px solid rgba(40, 170, 255, 0.4) !important;
+    background: rgba(0, 0, 0, 0.35) !important;
+    color: #8fa2b7 !important;
+    cursor: pointer !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__hint {
+    margin: 0 0 12px !important;
+    font-size: 0.88rem !important;
+    line-height: 1.45 !important;
+    color: #8696a0 !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__options {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+    margin-bottom: 14px !important;
+    text-align: start !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    padding: 10px 12px !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(40, 170, 255, 0.28) !important;
+    background: rgba(0, 0, 0, 0.35) !important;
+    cursor: pointer !important;
+    color: #e8f7ff !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option input {
+    position: absolute !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__radio {
+    width: 16px !important;
+    height: 16px !important;
+    border-radius: 50% !important;
+    border: 2px solid rgba(40, 170, 255, 0.45) !important;
+    flex-shrink: 0 !important;
+    position: relative !important;
+    background: transparent !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option.is-selected {
+    border-color: rgba(0, 200, 255, 0.7) !important;
+    background: rgba(0, 175, 255, 0.1) !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option.is-selected .chat-desktop-timer-dialog__radio {
+    border-color: #00c8ff !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__option.is-selected .chat-desktop-timer-dialog__radio::after {
+    content: '' !important;
+    position: absolute !important;
+    inset: 3px !important;
+    border-radius: 50% !important;
+    background: #00c8ff !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__label {
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__actions {
+    display: flex !important;
+    justify-content: center !important;
+    gap: 10px !important;
+    margin-top: auto !important;
+    padding-top: 4px !important;
+    flex-shrink: 0 !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__btn {
+    flex: 1 !important;
+    min-width: 0 !important;
+    padding: 11px 14px !important;
+    border-radius: 10px !important;
+    cursor: pointer !important;
+    font-weight: 700 !important;
+    font-size: 0.9rem !important;
+    background: rgba(0, 0, 0, 0.35) !important;
+    color: #e8f7ff !important;
+    border: 1px solid rgba(40, 170, 255, 0.4) !important;
+  }
+
+  .chat-panel .chat-desktop-timer-dialog__btn--confirm {
+    border-color: rgba(0, 200, 255, 0.55) !important;
+  }
+}
+
+/**
+ * בועות יוצאות (טקסט / קובץ / תמונה+טקסט) – מרקם זהה לנגן קול | HYPER CORE TECH
+ * חל גם במובייל; מדיה-בלבד נשארת שקופה עם מסגרת דקה על התמונה.
+ */
+.chat-panel .chat-message--outgoing .chat-message__content:not(.chat-message__content--image-only):not(.chat-message__content--video-only),
+.chat-panel .chat-message--outgoing .chat-message__bubble {
+  background:
+    linear-gradient(145deg, rgba(26, 58, 92, 0.92) 0%, rgba(18, 42, 72, 0.96) 45%, rgba(35, 75, 110, 0.88) 100%) !important;
+  border: 1px solid rgba(120, 200, 255, 0.45) !important;
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.45),
+    0 0 22px rgba(0, 175, 255, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -12px 26px rgba(0, 30, 55, 0.4) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/**
+ * נגן הודעה קולית – סייבר אחיד לשני הצדדים + EQ גם ב-pause | HYPER CORE TECH
+ */
+.chat-panel .chat-audio-whatsapp {
+  position: relative;
+  overflow: hidden;
+  gap: 12px !important;
+  padding: 10px 12px !important;
+  min-width: 260px;
+  max-width: min(396px, 86vw);
+  border-radius: 18px !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+/* יוצאות – זכוכית כחולה (גוון הצד) עם אותה מסגרת/זוהר סייבר | HYPER CORE TECH */
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp {
+  background:
+    linear-gradient(145deg, rgba(26, 58, 92, 0.92) 0%, rgba(18, 42, 72, 0.96) 45%, rgba(35, 75, 110, 0.88) 100%) !important;
+  border: 1px solid rgba(120, 200, 255, 0.45) !important;
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.45),
+    0 0 22px rgba(0, 175, 255, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -12px 26px rgba(0, 30, 55, 0.4) !important;
+}
+
+/* נכנסות – זכוכית אפורה-כהה (גוון הצד) + אותה שפה ויזואלית | HYPER CORE TECH */
+.chat-panel .chat-message--incoming .chat-audio-whatsapp {
+  background:
+    linear-gradient(145deg, rgba(18, 22, 30, 0.96) 0%, rgba(10, 14, 20, 0.98) 55%, rgba(22, 28, 38, 0.92) 100%) !important;
+  border: 1px solid rgba(40, 170, 255, 0.35) !important;
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.48),
+    0 0 18px rgba(0, 175, 255, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -12px 26px rgba(0, 0, 0, 0.4) !important;
+}
+
+.chat-panel .chat-audio-whatsapp__play {
+  width: 40px !important;
+  height: 40px !important;
+  min-width: 40px !important;
+  border-radius: 50% !important;
+  background: rgba(6, 18, 32, 0.85) !important;
+  border: 1px solid rgba(0, 175, 255, 0.55) !important;
+  color: #00afff !important;
+  box-shadow:
+    0 0 14px rgba(0, 175, 255, 0.35),
+    inset 0 0 0 1px rgba(0, 175, 255, 0.12) !important;
+}
+
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp__play {
+  background: rgba(255, 255, 255, 0.94) !important;
+  border-color: rgba(200, 230, 255, 0.9) !important;
+  color: #1a3a5c !important;
+  box-shadow:
+    0 0 14px rgba(120, 200, 255, 0.4),
+    0 2px 6px rgba(0, 0, 0, 0.25) !important;
+}
+
+.chat-panel .chat-audio-whatsapp__play:hover {
+  background: rgba(0, 175, 255, 0.16) !important;
+  color: #e8f7ff !important;
+  transform: scale(1.04);
+}
+
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp__play:hover {
+  background: #e8f7ff !important;
+  color: #0d2840 !important;
+}
+
+.chat-panel .chat-audio-whatsapp__play i {
+  color: inherit !important;
+}
+
+.chat-panel .chat-audio-whatsapp__content {
+  gap: 6px !important;
+}
+
+.chat-panel .chat-audio-whatsapp__eq {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2px;
+  height: 18px;
+  width: 100%;
+  margin: 0 0 2px;
+  opacity: 0.82;
+}
+
+.chat-panel .chat-audio-whatsapp__eq span {
+  flex: 1 1 0;
+  min-width: 2px;
+  max-width: 4px;
+  border-radius: 2px;
+  background: #00afff;
+  box-shadow: 0 0 6px rgba(0, 175, 255, 0.45);
+  transform-origin: bottom center;
+}
+
+/* pause – גבהים משתנים כמו EQ קפוא (לא שטוח) | HYPER CORE TECH */
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 1) { height: 42%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 2) { height: 78%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 3) { height: 28%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 4) { height: 92%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 5) { height: 55%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 6) { height: 70%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 7) { height: 36%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 8) { height: 88%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 9) { height: 48%; }
+.chat-panel .chat-audio-whatsapp__eq span:nth-child(10n + 10) { height: 64%; }
+
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp__eq span {
+  background: #b8e6ff;
+  box-shadow: 0 0 6px rgba(180, 230, 255, 0.5);
+}
+
+.chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__eq {
+  opacity: 1;
+}
+
+.chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__eq span {
+  animation: chatAudioEqBeat 0.9s ease-in-out infinite;
+}
+
+.chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__eq span:nth-child(2n) {
+  animation-duration: 0.7s;
+  animation-delay: 0.05s;
+}
+
+.chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__eq span:nth-child(3n) {
+  animation-duration: 1.05s;
+  animation-delay: 0.12s;
+}
+
+.chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__eq span:nth-child(4n) {
+  animation-duration: 0.8s;
+  animation-delay: 0.18s;
+}
+
+.chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__eq span:nth-child(5n) {
+  animation-duration: 1.15s;
+  animation-delay: 0.08s;
+}
+
+@keyframes chatAudioEqBeat {
+  0%, 100% { height: 28%; opacity: 0.65; }
+  35% { height: 95%; opacity: 1; }
+  70% { height: 45%; opacity: 0.85; }
+}
+
+.chat-panel .chat-audio-whatsapp__track {
+  height: 5px !important;
+  background: rgba(0, 175, 255, 0.18) !important;
+  border: 1px solid rgba(40, 170, 255, 0.25);
+  border-radius: 999px !important;
+  box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.35);
+}
+
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp__track {
+  background: rgba(255, 255, 255, 0.22) !important;
+  border-color: rgba(180, 220, 255, 0.35);
+}
+
+.chat-panel .chat-audio-whatsapp__progress {
+  background: linear-gradient(90deg, #0868ff, #00afff) !important;
+  box-shadow: 0 0 10px rgba(0, 175, 255, 0.55);
+  border-radius: 999px !important;
+}
+
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp__progress {
+  background: linear-gradient(90deg, #e8f7ff, #7ec8ff) !important;
+  box-shadow: 0 0 10px rgba(180, 230, 255, 0.55);
+}
+
+.chat-panel .chat-audio-whatsapp__seeker {
+  width: 14px !important;
+  height: 14px !important;
+  background: #e8f7ff !important;
+  border: 2px solid #00afff;
+  box-shadow:
+    0 0 10px rgba(0, 175, 255, 0.7),
+    0 2px 6px rgba(0, 0, 0, 0.35) !important;
+}
+
+.chat-panel .chat-audio-whatsapp__time {
+  color: #8fa2b7 !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp__time {
+  color: rgba(210, 230, 245, 0.85) !important;
+}
+
+.chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__time {
+  color: #00afff !important;
+  text-shadow: 0 0 8px rgba(0, 175, 255, 0.35);
+}
+
+.chat-panel .chat-message--outgoing .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__time {
+  color: #e8f7ff !important;
+  text-shadow: 0 0 8px rgba(180, 230, 255, 0.45);
+}
+
+.chat-panel .chat-audio-whatsapp__avatar {
+  border: 1px solid rgba(0, 175, 255, 0.45) !important;
+  box-shadow: 0 0 10px rgba(0, 175, 255, 0.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel .chat-audio-whatsapp.is-playing .chat-audio-whatsapp__eq span {
+    animation: none !important;
+  }
+}

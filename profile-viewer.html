@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="he">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SOS - People Are The Network</title>
+    <meta name="description" content="‎SOS - People Are The Network. Decentralized social, direct communication, real connection." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="SOS" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content="‎SOS - People Are The Network" />
+    <meta property="og:description" content="‎Decentralized social. Direct communication. Real connection." />
+    <meta property="og:image" content="https://sos010.com/icons/sos-og.jpg" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="1200" />
+    <meta property="og:url" content="https://sos010.com/profile-viewer.html" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="‎SOS - People Are The Network" />
+    <meta name="twitter:description" content="‎Decentralized social. Direct communication. Real connection." />
+    <meta name="twitter:image" content="https://sos010.com/icons/sos-og.jpg" />
+    <!-- חלק ראש פרופיל ציבורי (profile-viewer.html) – שומר על אותו עיצוב כמו הפרופיל האישי -->
+    <link rel="icon" type="image/png" href="./icons/WAPICON.png?v=20260726e" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+    <link rel="stylesheet" href="./styles/facebook-theme.css" />
+    <link rel="stylesheet" href="./styles/profile.css?v=20260803c" />
+    <link rel="stylesheet" href="./styles/media-overrides.css" />
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    <style>
+      /* פרופיל ציבורי - ללא חלל ריק למעלה */
+      .profile-body { padding-top: 0 !important; margin-top: 0 !important; }
+      .profile-shell { margin-top: 0 !important; padding-top: 0 !important; }
+      .profile-cover { margin-top: 0 !important; }
+      .profile-cover__banner { min-height: 120px; }
+
+      /* חלק מובייל (profile-viewer) – כרטיס כיסוי כמו פרופיל אישי + עקוב/חזרה | HYPER CORE TECH */
+      @media (max-width: 900px) {
+        .profile-viewer-body {
+          background: #000 !important;
+        }
+        .profile-viewer-body .profile-shell {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 auto !important;
+          padding: 10px 12px 0 !important;
+          box-sizing: border-box !important;
+          align-content: start !important;
+          min-height: 0 !important;
+        }
+        .profile-viewer-body .profile-cover {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 auto !important;
+          padding: 0 !important;
+        }
+        .profile-viewer-body .profile-cover__banner {
+          min-height: 220px !important;
+          border-radius: 18px !important;
+          border: 1px solid rgba(37, 244, 238, 0.22) !important;
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45) !important;
+          overflow: hidden !important;
+          position: relative !important;
+        }
+        .profile-viewer-body .profile-cover__inner {
+          display: flex !important;
+          flex-direction: column !important;
+          align-items: stretch !important;
+          padding: 14px 12px 58px !important;
+          padding-inline-start: 112px !important;
+          min-height: 220px !important;
+          gap: 8px !important;
+        }
+        .profile-viewer-body .profile-cover__avatar {
+          display: flex !important;
+          position: absolute !important;
+          top: 0 !important;
+          inset-inline-start: 0 !important;
+          width: 108px !important;
+          height: 108px !important;
+          z-index: 3 !important;
+          cursor: default !important;
+        }
+        .profile-viewer-body .profile-cover__info-block {
+          display: flex !important;
+          visibility: visible !important;
+          opacity: 1 !important;
+        }
+        .profile-viewer-body .profile-cover__stats-row {
+          display: flex !important;
+        }
+        .profile-viewer-body .profile-cover__actions {
+          display: flex !important;
+          position: absolute !important;
+          bottom: 8px !important;
+          left: 8px !important;
+          right: 8px !important;
+          inset-inline-start: 8px !important;
+          inset-inline-end: 8px !important;
+          gap: 8px !important;
+          justify-content: center !important;
+          align-items: stretch !important;
+          flex-wrap: nowrap !important;
+          z-index: 4 !important;
+        }
+        .profile-viewer-body .profile-cover__actions .profile-primary-button,
+        .profile-viewer-body .profile-cover__actions .profile-secondary-button {
+          display: inline-flex !important;
+          visibility: visible !important;
+          flex: 1 1 0 !important;
+          align-items: center !important;
+          justify-content: center !important;
+          min-height: 36px !important;
+          margin: 0 !important;
+          opacity: 1 !important;
+        }
+        .profile-viewer-body .profile-main {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 auto !important;
+          padding: 0 !important;
+          display: flex !important;
+          flex-direction: column !important;
+          gap: 0 !important;
+          min-height: 0 !important;
+        }
+        .profile-viewer-body .profile-mobile-tabs,
+        .profile-viewer-body .profile-mobile-tabs--dual {
+          display: none !important;
+        }
+        .profile-viewer-body .profile-timeline {
+          padding: 0 !important;
+          margin-top: 8px !important;
+          background: transparent !important;
+          gap: 0 !important;
+        }
+        .profile-viewer-body .profile-timeline__list {
+          display: grid !important;
+          grid-template-columns: repeat(3, 1fr) !important;
+          gap: 2px !important;
+        }
+      }
+    </style>
+    <script src="./key-storage.js?pkg=889"></script>
+    <script src="./identity-storage-bootstrap.js?pkg=889"></script>
+    <script src="./auth-guard.js?pkg=889"></script>
+  </head>
+  <body class="profile-body profile-viewer-body" dir="rtl">
+    <!-- חלק חיווי חיבור (profile-viewer.html) – מציג מצב טעינת ריליים -->
+    <div id="connection-status" class="profile-connection" hidden>מתחבר לריליים...</div>
+
+    <!-- חלק מעטפת פרופיל (profile-viewer.html) – מעצב את הכיסוי והמידע הבסיסי של המשתמש -->
+    <main class="app-shell profile-shell">
+      <section class="profile-cover" id="viewerCover">
+        <!-- חלק באנר (profile-viewer.html) – מבנה כמו פרופיל אישי כדי שלא יוסתר במובייל | HYPER CORE TECH -->
+        <div class="profile-cover__banner" id="viewerCoverBanner">
+          <img class="profile-cover__banner-image" id="viewerCoverImage" alt="" hidden />
+          <div class="profile-cover__inner">
+            <div class="profile-cover__avatar" id="viewerAvatar">?</div>
+
+            <div class="profile-cover__info-block">
+              <div class="profile-cover__info-center">
+                <h1 class="profile-cover__name" id="viewerName">טוען משתמש...</h1>
+                <p class="profile-cover__bio" id="viewerBio">אוספים פרטי פרופיל מהריליים.</p>
+              </div>
+
+              <div class="profile-cover__stats-row">
+                <div class="profile-cover__stat-box">
+                  <span class="profile-cover__stat-value" id="viewerFollowersCount">0</span>
+                  <span class="profile-cover__stat-label">עוקבים</span>
+                </div>
+                <div class="profile-cover__stat-box">
+                  <span class="profile-cover__stat-value" id="viewerFollowingCount">0</span>
+                  <span class="profile-cover__stat-label">נעקבים</span>
+                </div>
+                <div class="profile-cover__stat-box">
+                  <span class="profile-cover__stat-value" id="viewerLikesCount">0</span>
+                  <span class="profile-cover__stat-label">לייקים</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="profile-cover__actions">
+              <button
+                class="profile-primary-button profile-follow__button"
+                id="viewerFollowButton"
+                type="button"
+                data-follow-button=""
+                data-follow-label
+              >
+                <i class="fa-solid fa-user-plus"></i>
+                <span data-follow-label>עקוב</span>
+              </button>
+              <button class="profile-secondary-button" id="viewerBackButton" type="button">
+                <i class="fa-solid fa-arrow-right"></i>
+                <span>חזרה</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+      
+      <!-- טאבים כמו בפרופיל אישי -->
+      <nav class="profile-mobile-tabs profile-mobile-tabs--dual" id="viewerMobileTabs" aria-label="ניווט פרופיל">
+        <button type="button" class="profile-mobile-tab profile-mobile-tab--large" data-profile-tab="stats" aria-controls="viewerStatsPanel">
+          סטטיסטיקות
+        </button>
+        <button type="button" class="profile-mobile-tab profile-mobile-tab--large is-active" data-profile-tab="posts" aria-controls="viewerPostsPanel">
+          פוסטים
+        </button>
+      </nav>
+
+      <!-- חלק פריסת תוכן (profile-viewer.html) – מציג נתונים וסטטיסטיקות -->
+      <section class="profile-main">
+        <aside class="profile-sidebar">
+          <!-- פאנל סטטיסטיקות עם גרף - כמו בפרופיל אישי -->
+          <section class="profile-card profile-card--activity" data-profile-panel="stats" id="viewerStatsPanel">
+            <h2 class="profile-card__title">נתוני פעילות</h2>
+            <div class="profile-activity">
+              <div class="profile-activity__controls">
+                <div class="profile-activity__summary">
+                  <div class="profile-activity__summary-item">
+                    <div class="profile-activity__summary-heading">
+                      <span class="profile-activity__summary-label">פוסטים</span>
+                      <span class="profile-activity__summary-change is-neutral" id="viewerStatsPostsChange">0%</span>
+                    </div>
+                    <span class="profile-activity__summary-value" id="viewerStatsPosts">0</span>
+                    <span class="profile-activity__summary-note" id="viewerStatsPostsNote">אין שינוי לעומת התקופה הקודמת</span>
+                  </div>
+                  <div class="profile-activity__summary-item">
+                    <div class="profile-activity__summary-heading">
+                      <span class="profile-activity__summary-label">לייקים</span>
+                      <span class="profile-activity__summary-change is-neutral" id="viewerStatsLikesChange">0%</span>
+                    </div>
+                    <span class="profile-activity__summary-value" id="viewerStatsLikes">0</span>
+                    <span class="profile-activity__summary-note" id="viewerStatsLikesNote">אין שינוי לעומת התקופה הקודמת</span>
+                  </div>
+                  <div class="profile-activity__summary-item">
+                    <div class="profile-activity__summary-heading">
+                      <span class="profile-activity__summary-label">תגובות שנאספו</span>
+                      <span class="profile-activity__summary-change is-neutral" id="viewerStatsCommentsChange">0%</span>
+                    </div>
+                    <span class="profile-activity__summary-value" id="viewerStatsComments">0</span>
+                    <span class="profile-activity__summary-note" id="viewerStatsCommentsNote">אין שינוי לעומת התקופה הקודמת</span>
+                  </div>
+                  <div class="profile-activity__summary-item">
+                    <div class="profile-activity__summary-heading">
+                      <span class="profile-activity__summary-label">תגובות שנשלחו</span>
+                      <span class="profile-activity__summary-change is-neutral" id="viewerStatsRepliesChange">0%</span>
+                    </div>
+                    <span class="profile-activity__summary-value" id="viewerStatsReplies">0</span>
+                    <span class="profile-activity__summary-note" id="viewerStatsRepliesNote">אין שינוי לעומת התקופה הקודמת</span>
+                  </div>
+                </div>
+                <div class="profile-activity__periods" role="group" aria-label="בחירת טווח זמן" id="viewerActivityPeriods">
+                  <button type="button" class="profile-activity__period" data-activity-period="7">7 ימים</button>
+                  <button type="button" class="profile-activity__period" data-activity-period="30">30 ימים</button>
+                  <button type="button" class="profile-activity__period is-active" data-activity-period="60">60 ימים</button>
+                </div>
+              </div>
+              <div class="profile-activity__chart" id="viewerActivityChart"></div>
+              <div class="profile-activity__empty" id="viewerActivityEmpty" hidden>
+                עדיין לא נרשמה פעילות בתקופה שנבחרה.
+              </div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="profile-timeline is-active" data-profile-panel="posts" id="viewerPostsPanel">
+          <header class="profile-timeline__header">
+            <h2 class="profile-timeline__title">פוסטים</h2>
+            <div class="profile-timeline__actions">
+              <button class="profile-secondary-button" id="viewerRefreshButton">
+                <i class="fa-solid fa-rotate"></i>
+                רענון
+              </button>
+            </div>
+          </header>
+          <div class="profile-status profile-timeline__loader" id="viewerTimelineStatus" hidden>
+            <div class="profile-timeline__loader-inner" role="status" aria-live="polite">
+              <span class="profile-timeline__loader-spinner" aria-hidden="true"></span>
+              <span class="profile-timeline__loader-text">טוען פוסטים...</span>
+              <div class="profile-timeline__loader-bar" aria-hidden="true"><i></i></div>
+            </div>
+          </div>
+          <ul class="profile-timeline__list" id="viewerTimeline"></ul>
+        </section>
+      </section>
+    </main>
+
+    <!-- חלק סקריפטים (profile-viewer.html) – טוען את כל הלוגיקה הדרושה -->
+    <script src="https://unpkg.com/nostr-tools@2.7.2/lib/nostr.bundle.js"></script>
+    <script src="./config.js?pkg=889"></script>
+    <script src="./utils.js"></script>
+    <script src="./key-utils.js"></script>
+    <script src="./keys.js?pkg=889"></script>
+    <script src="./follow-service.js"></script>
+    <script src="./profile-engagement.js"></script>
+    <script src="./profile-post.js"></script>
+    <script src="./profile-viewer.js?v=20260803d"></script>
+
+    <!-- חלק מודל גלריה צופים (profile-viewer.html) – מציג תמונה מוגדלת בלחיצה בצד הצופה -->
+    <div class="profile-gallery-modal" id="viewerGalleryModal" hidden>
+      <button class="profile-gallery-modal__close" id="viewerGalleryModalClose" type="button" aria-label="סגירת תמונת גלריה">×</button>
+      <img class="profile-gallery-modal__image" id="viewerGalleryModalImage" alt="תצוגת גלריה ציבורית" />
+    </div>
+  </body>
+</html>

@@ -1,0 +1,891 @@
+/* חלק מצלמה (video-record.css) – מסך מלא בסגנון טיקטוק | HYPER CORE TECH */
+
+.video-record-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: none;
+  background: #000;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.video-record-modal.is-visible {
+  display: block;
+  opacity: 1;
+}
+
+.video-record-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* LTR פיזי — left/right לא מתהפכים בגלל dir=rtl של העמוד | HYPER CORE TECH */
+  direction: ltr;
+}
+
+.video-record-stage[hidden] {
+  display: none !important;
+}
+
+.vr-preview-wrap {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.vr-preview-wrap.is-front {
+  transform: translateZ(0) scaleX(-1);
+}
+
+#videoRecordPreview,
+#videoRecordReviewVideo,
+#videoRecordReviewImage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+  transform: translateZ(0);
+}
+
+body.video-record-open .videos-feed video,
+body.video-record-open .videos-feed iframe {
+  visibility: hidden;
+}
+
+.video-record-modal.is-recording .vr-bg-strip,
+.video-record-modal.is-recording .vr-bg-dismiss,
+.video-record-modal.is-recording .vr-live-dot,
+.video-record-modal.is-recording .vr-grid {
+  visibility: hidden;
+  pointer-events: none;
+  animation: none;
+}
+
+.video-record-modal.is-recording .floating-timer {
+  animation: none;
+}
+
+/* מנורת הקלטה — כמו במצלמת וידאו | HYPER CORE TECH */
+.vr-rec-lamp {
+  position: absolute;
+  top: calc(54px + var(--safe-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff1f1f;
+  box-shadow: 0 0 6px 2px rgba(255, 31, 31, 0.8);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.video-record-modal.is-recording .vr-rec-lamp {
+  opacity: 1;
+  visibility: visible;
+  animation: vrRecLamp 0.9s ease-in-out infinite;
+}
+
+/* חזרה — תמיד פינה ימנית עליונה | HYPER CORE TECH */
+.vr-close {
+  position: absolute !important;
+  top: calc(10px + var(--safe-top, 0px)) !important;
+  right: 10px !important;
+  left: auto !important;
+  inset-inline-start: auto !important;
+  inset-inline-end: 10px !important;
+  z-index: 6;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 1.05rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.vr-close:hover,
+.vr-close:focus-visible {
+  background: rgba(0, 0, 0, 0.6);
+  outline: none;
+}
+
+/* תפריט 3 כפתורים — שורה אחת בהדר העליון משמאל | HYPER CORE TECH */
+.vr-side-tools {
+  position: absolute !important;
+  top: calc(10px + var(--safe-top, 0px)) !important;
+  left: 10px !important;
+  right: auto !important;
+  inset-inline-start: 10px !important;
+  inset-inline-end: auto !important;
+  z-index: 6;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.vr-tool-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.vr-tool-btn__aa {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.vr-tool-btn.is-on {
+  background: rgba(255, 193, 7, 0.85);
+  color: #111;
+}
+
+.vr-tool-btn.is-active {
+  background: rgba(79, 195, 247, 0.9);
+  color: #0a0a0a;
+}
+
+.vr-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  padding: 0;
+  margin: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.45), transparent 65%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.vr-modes {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 12px;
+  direction: rtl;
+}
+
+.vr-mode {
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.vr-mode.is-active {
+  background: rgba(255, 255, 255, 0.95);
+  color: #111;
+}
+
+.vr-shutter-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 92px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.vr-bg-dismiss {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.vr-bg-dismiss.is-visible,
+.vr-bg-dismiss:not([hidden]) {
+  display: inline-flex;
+}
+
+.vr-bg-dismiss[hidden] {
+  display: none !important;
+}
+
+/* גלילה LTR דרך מרכז הכפתור (כמו אפקטים בטיקטוק) | HYPER CORE TECH */
+.vr-bg-strip {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  direction: ltr;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  /* מאפשר לגלול כל עיגול למרכז מתחת לכפתור */
+  padding-inline: calc(50% - 28px);
+  box-sizing: border-box;
+}
+
+.vr-bg-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.vr-bg-thumb {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  background: #222 center / cover no-repeat;
+  padding: 0;
+  cursor: pointer;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  opacity: 0.72;
+  transform: scale(0.92);
+  transition: transform 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.vr-bg-thumb.is-selected {
+  opacity: 1;
+  transform: scale(1);
+  border-color: transparent;
+}
+
+.vr-bg-thumb--none {
+  background: rgba(0, 0, 0, 0.35);
+  border-style: dashed;
+  color: #fff;
+  font-size: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vr-bg-thumb--none::before {
+  content: '✕';
+  opacity: 0.85;
+  font-size: 14px;
+}
+
+.record-button {
+  background: transparent;
+  border: 4px solid #fff;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  cursor: pointer;
+  position: relative;
+  z-index: 3;
+  padding: 0;
+  box-shadow: 0 0 0 3px #fe2c55;
+  /* מאפשר לגעת גם בגלילת הרצועה מסביב; הכפתור עצמו לחיץ */
+  pointer-events: auto;
+}
+
+.record-button.is-solid {
+  background: #fe2c55;
+  box-shadow: none;
+}
+
+.record-button.recording {
+  background: #fe2c55;
+  box-shadow: none;
+}
+
+.record-button-inner {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: #fe2c55;
+  transition: all 0.2s ease;
+  opacity: 0;
+}
+
+.record-button.is-solid .record-button-inner,
+.record-button.recording .record-button-inner {
+  opacity: 1;
+}
+
+.record-button.recording .record-button-inner {
+  background: #fff;
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  margin: 20px auto;
+}
+
+.record-button.is-photo.is-solid .record-button-inner {
+  background: #fff;
+}
+
+.vr-bg-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 3;
+  pointer-events: none;
+  background: #000;
+}
+
+.vr-bg-frame:not([hidden]) {
+  display: block;
+}
+
+.vr-footer-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 16px max(8px, env(safe-area-inset-bottom, 0px));
+  background: transparent;
+  direction: rtl;
+  box-sizing: border-box;
+  margin: 0;
+}
+
+.vr-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 2px;
+}
+
+.vr-footer-btn--gallery {
+  cursor: pointer;
+  flex-direction: row;
+  align-items: center;
+}
+
+/* תמונה זעירה במקום אייקון גלריה | HYPER CORE TECH */
+.vr-gallery-thumb {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  overflow: hidden;
+  border: 1.5px solid rgba(255, 255, 255, 0.95);
+  background: rgba(0, 0, 0, 0.35);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.vr-gallery-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+.vr-gallery-thumb.has-image img {
+  display: block;
+}
+
+.vr-gallery-thumb.has-image .vr-gallery-thumb__fallback {
+  display: none;
+}
+
+.vr-gallery-thumb__fallback {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* שידור חי רגיל + נקודה אדומה | HYPER CORE TECH */
+.vr-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fe2c55;
+  box-shadow: 0 0 0 2px rgba(254, 44, 85, 0.35), 0 0 8px rgba(254, 44, 85, 0.75);
+  flex-shrink: 0;
+  animation: vrLivePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes vrLivePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.65; transform: scale(0.92); }
+}
+
+/* שכבת טקסט על התמונה כמו טיקטוק | HYPER CORE TECH */
+.vr-text-layer {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  z-index: 4;
+  color: #fff;
+  font-size: clamp(22px, 6vw, 34px);
+  font-weight: 800;
+  text-align: center;
+  line-height: 1.25;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.65), 0 0 2px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  word-break: break-word;
+  direction: rtl;
+}
+
+.vr-text-layer[hidden] {
+  display: none !important;
+}
+
+.vr-text-layer[data-pos="top"] {
+  top: 18%;
+  bottom: auto;
+  transform: none;
+}
+
+.vr-text-layer[data-pos="middle"] {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+
+.vr-text-layer[data-pos="bottom"] {
+  top: auto;
+  bottom: 28%;
+  transform: none;
+}
+
+.vr-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background:
+    linear-gradient(to right, transparent 33.33%, rgba(255, 255, 255, 0.32) 33.33%, rgba(255, 255, 255, 0.32) calc(33.33% + 1px), transparent calc(33.33% + 1px), transparent 66.66%, rgba(255, 255, 255, 0.32) 66.66%, rgba(255, 255, 255, 0.32) calc(66.66% + 1px), transparent calc(66.66% + 1px)),
+    linear-gradient(to bottom, transparent 33.33%, rgba(255, 255, 255, 0.32) 33.33%, rgba(255, 255, 255, 0.32) calc(33.33% + 1px), transparent calc(33.33% + 1px), transparent 66.66%, rgba(255, 255, 255, 0.32) 66.66%, rgba(255, 255, 255, 0.32) calc(66.66% + 1px), transparent calc(66.66% + 1px));
+}
+
+.vr-grid[hidden] {
+  display: none !important;
+}
+
+.vr-countdown {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: clamp(72px, 22vw, 112px);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-shadow: 0 6px 28px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.vr-countdown[hidden] {
+  display: none !important;
+}
+
+.vr-countdown.is-pop {
+  animation: vrCountPop 0.45s ease-out;
+}
+
+@keyframes vrCountPop {
+  from { transform: scale(0.72); opacity: 0.35; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.vr-text-editor {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  direction: rtl;
+}
+
+.vr-text-editor[hidden] {
+  display: none !important;
+}
+
+.vr-text-editor__input {
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  padding: 12px 14px;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.vr-text-editor__input::placeholder {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.vr-text-positions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.vr-text-pos {
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vr-text-pos.is-active {
+  background: #fff;
+  color: #111;
+  border-color: #fff;
+}
+
+.vr-text-editor__done {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: #4fc3f7;
+  color: #0a0a0a;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+/* מד זמן — משמאל לכפתור האדום, בלי לדחוף את התחתית | HYPER CORE TECH */
+.floating-timer {
+  position: absolute;
+  left: auto;
+  right: calc(50% + 58px);
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #fff;
+  font-weight: 800;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  padding: 2px 8px 2px 6px;
+  margin: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.floating-timer.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.floating-timer::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff1f1f;
+  box-shadow: 0 0 6px 2px rgba(255, 31, 31, 0.9);
+  animation: vrRecLamp 0.9s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes vrRecLamp {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.22; }
+}
+
+.floating-timer.pulse {
+  animation: vrTimerPulse 0.45s ease;
+}
+
+@keyframes vrTimerPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+/* כפתור הבא – למעלה משמאל, גודל לפי הטקסט, לא מכסה כתוביות למטה | HYPER CORE TECH */
+.video-record-stage--review .vr-text-layer {
+  z-index: 5;
+}
+
+.video-record-stage--review .vr-review-actions {
+  position: absolute;
+  top: calc(10px + var(--safe-top, 0px));
+  bottom: auto;
+  left: 10px;
+  right: auto;
+  z-index: 6;
+  display: flex;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.vr-next-btn {
+  width: auto;
+  min-width: 0;
+  border: none;
+  border-radius: 999px;
+  padding: 10px 18px;
+  background: #4fc3f7;
+  color: #0a0a0a;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+/* חלק קומפוזר – כפתור האשטאגים + הצעות | HYPER CORE TECH */
+.compose-topic-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  direction: rtl;
+  margin: 0;
+}
+
+.compose-pill {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compose-pill.is-active {
+  border-color: rgba(79, 195, 247, 0.75);
+  background: rgba(79, 195, 247, 0.16);
+}
+
+.compose-hashtag-suggest {
+  direction: rtl;
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.compose-hashtag-suggest[hidden] {
+  display: none !important;
+}
+
+.compose-hashtag-suggest__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 8px;
+}
+
+.compose-hashtag-suggest__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compose-hashtag-chip {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 11px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.compose-hashtag-chip:hover,
+.compose-hashtag-chip:focus-visible {
+  border-color: rgba(79, 195, 247, 0.7);
+  background: rgba(79, 195, 247, 0.14);
+  outline: none;
+}
+
+/* מצב בלי מצלמה – תמונה גדולה + הודעה, בלי לסגור | HYPER CORE TECH */
+.vr-no-camera {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.vr-no-camera[hidden] {
+  display: none !important;
+}
+
+.vr-no-camera__bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: brightness(0.72);
+}
+
+.vr-no-camera__msg {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  text-align: center;
+  direction: rtl;
+  max-width: min(320px, 86%);
+}
+
+.vr-no-camera__msg strong {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.vr-no-camera__msg span {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  line-height: 1.35;
+}
+
+.video-record-modal.is-no-camera .vr-tool-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ===== דסקטופ בלבד – כיסוי מלא של עמודת הווידאו משמאל; תפריט ימין גלוי | HYPER CORE TECH ===== */
+@media (min-width: 769px) {
+  .video-record-modal.is-visible {
+    display: block !important;
+    /* כל העמודה השמאלית מעל מסגרת הווידאו — לא כרטיס צף | HYPER CORE TECH */
+    inset: auto !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: var(--videos-desktop-nav-width, 220px) !important;
+    bottom: 0 !important;
+    width: auto !important;
+    height: 100dvh !important;
+    background: #000;
+  }
+
+  .video-record-stage {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    border-radius: 0 !important;
+    overflow: hidden;
+    box-shadow: none;
+    background: #000;
+  }
+
+  .video-record-stage[hidden] {
+    display: none !important;
+  }
+
+  .vr-rec-lamp {
+    top: calc(18px + var(--safe-top, 0px));
+    width: 14px;
+    height: 14px;
+    box-shadow: 0 0 10px 3px rgba(255, 31, 31, 0.85);
+  }
+
+  .floating-timer {
+    right: calc(50% + 64px);
+    font-size: 28px;
+    gap: 8px;
+    padding: 4px 14px 4px 10px;
+  }
+
+  .floating-timer::before {
+    width: 12px;
+    height: 12px;
+  }
+}

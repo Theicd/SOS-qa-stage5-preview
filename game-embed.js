@@ -1,0 +1,783 @@
+// חלק משחק בפיד (game-embed.js) – iframe מלא על כל הפוסט + מסך מלא | HYPER CORE TECH
+(function initGameEmbed(window) {
+  const App = window.NostrApp || (window.NostrApp = {});
+
+  // רק דומיינים שמתאימים לקטלוג SOS – לא poki/crazygames (שם Subway Surfers ויראלי) | HYPER CORE TECH
+  const GAME_HOST_RE = /(github\.io|itch\.io|gamh5\.com|krunker\.io|famobi\.com|marketjs\.com)/i;
+  const GAME_PATH_RE = /\/(game|games|play|mobile|mobileapp|arcade|html5|full)(\/|$)/i;
+  const MEDIA_EXT_RE = /\.(mp4|webm|ogg|mov|m4v|m3u8|jpg|jpeg|png|gif|webp|svg|pdf)(\?|#|$)/i;
+  // חסימה מפורשת – לא להציג בכלל בפיד | HYPER CORE TECH
+  const BLOCKED_GAME_RE = /subway[\s\-_.]*surfers?|subwaysurfers|sz-games\.github\.io\/game\/\d+/i;
+
+  function isBlockedGameUrl(url) {
+    return BLOCKED_GAME_RE.test(String(url || ''));
+  }
+
+  function isPlayableGameUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    const trimmed = url.trim();
+    if (!/^https:\/\//i.test(trimmed)) return false;
+    if (MEDIA_EXT_RE.test(trimmed)) return false;
+    if (isBlockedGameUrl(trimmed)) return false;
+    if (typeof App.isHlsLiveUrl === 'function' && App.isHlsLiveUrl(trimmed)) return false;
+    if (/youtube\.com|youtu\.be/i.test(trimmed)) return false;
+    if (/blossom|void\.cat|nostr\.build|satellite\.earth/i.test(trimmed)) return false;
+    // דומיינים אגרסיביים של משחקי וירוס/פרסומות – לא לזהות אוטומטית | HYPER CORE TECH
+    if (/poki\.com|crazygames\.com|gamedistribution\.com|html5games|newgrounds\.com/i.test(trimmed)) {
+      return false;
+    }
+    if (GAME_HOST_RE.test(trimmed)) return true;
+    if (GAME_PATH_RE.test(trimmed) && GAME_HOST_RE.test(trimmed)) return true;
+    return false;
+  }
+
+  // לינק שמותר להטמיע כמשחק כשהמשתמש סימן במפורש (גם מחוץ לרשימת דומיינים) | HYPER CORE TECH
+  function canEmbedGameUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    const trimmed = url.trim();
+    if (!/^https:\/\//i.test(trimmed)) return false;
+    if (MEDIA_EXT_RE.test(trimmed)) return false;
+    if (isBlockedGameUrl(trimmed)) return false;
+    if (typeof App.isHlsLiveUrl === 'function' && App.isHlsLiveUrl(trimmed)) return false;
+    if (/youtube\.com|youtu\.be/i.test(trimmed)) return false;
+    if (/blossom|void\.cat|nostr\.build|satellite\.earth/i.test(trimmed)) return false;
+    if (/poki\.com|crazygames\.com|gamedistribution\.com|html5games|newgrounds\.com/i.test(trimmed)) {
+      return false;
+    }
+    return true;
+  }
+
+  function extractGameUrlFromText(text) {
+    if (!text) return '';
+    const match = String(text).match(/https:\/\/[^\s]+/gi);
+    if (!match) return '';
+    for (let i = 0; i < match.length; i += 1) {
+      const clean = String(match[i] || '').replace(/[),.;]+$/g, '');
+      if (isPlayableGameUrl(clean)) return clean;
+    }
+    return '';
+  }
+
+  // חילוץ לינק https כללי לסימון ידני כמשחק | HYPER CORE TECH
+  function extractEmbeddableGameUrlFromText(text) {
+    if (!text) return '';
+    const auto = extractGameUrlFromText(text);
+    if (auto) return auto;
+    const match = String(text).match(/https:\/\/[^\s]+/gi);
+    if (!match) return '';
+    for (let i = 0; i < match.length; i += 1) {
+      const clean = String(match[i] || '').replace(/[),.;]+$/g, '');
+      if (canEmbedGameUrl(clean)) return clean;
+    }
+    return '';
+  }
+
+  function removeGameBadge(mediaDiv) {
+    if (!mediaDiv) return;
+    mediaDiv.querySelectorAll('.videos-game-badge').forEach((el) => el.remove());
+  }
+
+  function hideGamePlayOverlay(mediaDiv) {
+    if (!mediaDiv) return;
+    const overlay = mediaDiv.querySelector('[data-play-toggle]');
+    if (overlay) {
+      overlay.style.display = 'none';
+      overlay.hidden = true;
+      overlay.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  function setGameInteractive(mediaDiv, enabled) {
+    if (!mediaDiv) return;
+    ensureGameFullscreenControls(mediaDiv);
+    if (enabled) {
+      mediaDiv.classList.add('is-game-interactive');
+    } else {
+      mediaDiv.classList.remove('is-game-interactive');
+    }
+    syncGameReleaseUi(mediaDiv);
+  }
+
+  function syncGameReleaseUi(mediaDiv) {
+    if (!mediaDiv) return;
+    const interactive = mediaDiv.classList.contains('is-game-interactive');
+    const fullscreen = mediaDiv.classList.contains('is-game-fullscreen');
+    const showRelease = interactive && !fullscreen;
+
+    const releaseBtn = mediaDiv.querySelector('.videos-game-release-btn');
+    const toast = mediaDiv.querySelector('.videos-game-release-toast');
+    if (releaseBtn) releaseBtn.hidden = !showRelease;
+
+    if (toast) {
+      if (showRelease) {
+        toast.hidden = false;
+        toast.classList.add('is-visible');
+        clearTimeout(mediaDiv._gameReleaseToastTimer);
+        mediaDiv._gameReleaseToastTimer = setTimeout(() => {
+          toast.classList.remove('is-visible');
+        }, 4500);
+      } else {
+        clearTimeout(mediaDiv._gameReleaseToastTimer);
+        mediaDiv._gameReleaseToastTimer = null;
+        toast.classList.remove('is-visible');
+        toast.hidden = true;
+      }
+    }
+  }
+
+  function releaseGameForScroll(mediaDiv) {
+    if (!mediaDiv) return;
+    setGameInteractive(mediaDiv, false);
+  }
+
+  function exitAllGameInteractive() {
+    document.querySelectorAll('.videos-feed__media--game.is-game-interactive').forEach((el) => {
+      if (el.classList.contains('is-game-fullscreen')) return;
+      setGameInteractive(el, false);
+    });
+  }
+
+  function bindFeedScrollExit() {
+    const viewport = document.querySelector('.videos-feed__viewport')
+      || document.querySelector('.games-feed__viewport')
+      || document.getElementById('gamesViewport');
+    if (!viewport || viewport._gameScrollExitBound) return;
+    viewport._gameScrollExitBound = true;
+    let lastTop = viewport.scrollTop;
+    viewport.addEventListener('scroll', () => {
+      if (Math.abs(viewport.scrollTop - lastTop) < 6) return;
+      lastTop = viewport.scrollTop;
+      exitAllGameInteractive();
+    }, { passive: true });
+  }
+
+  // שכבת מגן – במובייל מאפשרת גלילה; הקשה קצרה מפעילה משחק | HYPER CORE TECH
+  function ensureGameScrollShield(mediaDiv) {
+    if (!mediaDiv) return;
+    bindFeedScrollExit();
+
+    let shield = mediaDiv.querySelector('.videos-feed__game-scroll-shield');
+    if (!shield) {
+      shield = document.createElement('div');
+      shield.className = 'videos-feed__game-scroll-shield';
+      shield.setAttribute('aria-label', 'החלק לגלילה, הקש לשחק');
+      shield.innerHTML = '<span class="videos-feed__game-scroll-hint">החלק לגלילה · הקש לשחק</span>';
+      mediaDiv.appendChild(shield);
+
+      let startX = 0;
+      let startY = 0;
+      let moved = false;
+
+      shield.addEventListener('touchstart', (e) => {
+        const t = e.touches && e.touches[0];
+        if (!t) return;
+        startX = t.clientX;
+        startY = t.clientY;
+        moved = false;
+      }, { passive: true });
+
+      shield.addEventListener('touchmove', (e) => {
+        const t = e.touches && e.touches[0];
+        if (!t) return;
+        if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+          moved = true;
+        }
+      }, { passive: true });
+
+      shield.addEventListener('touchend', () => {
+        if (!moved) setGameInteractive(mediaDiv, true);
+      }, { passive: true });
+
+      // קליק דסקטופ – לא חוסמים גלגלת עכבר
+      shield.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setGameInteractive(mediaDiv, true);
+      });
+    }
+
+    // רצועות קצה לגלילה גם במצב משחק פעיל | HYPER CORE TECH
+    if (!mediaDiv.querySelector('.videos-feed__game-scroll-lane--top')) {
+      const topLane = document.createElement('div');
+      topLane.className = 'videos-feed__game-scroll-lane videos-feed__game-scroll-lane--top';
+      topLane.setAttribute('aria-hidden', 'true');
+      const bottomLane = document.createElement('div');
+      bottomLane.className = 'videos-feed__game-scroll-lane videos-feed__game-scroll-lane--bottom';
+      bottomLane.setAttribute('aria-hidden', 'true');
+      const exitInteractive = () => setGameInteractive(mediaDiv, false);
+      topLane.addEventListener('touchstart', exitInteractive, { passive: true });
+      bottomLane.addEventListener('touchstart', exitInteractive, { passive: true });
+      mediaDiv.appendChild(topLane);
+      mediaDiv.appendChild(bottomLane);
+    }
+
+    // ברירת מחדל במובייל: לא אינטראקטיבי כדי לא לחסום גלילה
+    if (!mediaDiv.classList.contains('is-game-fullscreen')) {
+      setGameInteractive(mediaDiv, false);
+    }
+  }
+
+  function setGamePlaceholder(mediaDiv, text) {
+    let placeholder = mediaDiv.querySelector('.videos-feed__game-placeholder');
+    if (!placeholder) {
+      placeholder = document.createElement('div');
+      placeholder.className = 'videos-feed__game-placeholder';
+      placeholder.setAttribute('data-game-tap-zone', '');
+      mediaDiv.appendChild(placeholder);
+    }
+    placeholder.innerHTML = '<i class="fa-solid fa-gamepad"></i><span></span>';
+    const span = placeholder.querySelector('span');
+    if (span) span.textContent = text || 'טוען משחק...';
+    placeholder.hidden = false;
+    return placeholder;
+  }
+
+  // דוחף למשחק (Construct וכו') לעשות resize לפי גודל ה-iframe | HYPER CORE TECH
+  function nudgeGameResize(iframe) {
+    if (!iframe) return;
+    try {
+      const win = iframe.contentWindow;
+      if (!win) return;
+      win.dispatchEvent(new Event('resize'));
+      if (typeof win.cr_sizeCanvas === 'function') {
+        win.cr_sizeCanvas(win.innerWidth, win.innerHeight);
+      }
+    } catch (_) {
+      // cross-origin – שינוי גודל ה-iframe עצמו מפעיל resize פנימי
+    }
+    // טריק: שינוי זעיר ברוחב מאלץ reflow + resize בתוך iframe | HYPER CORE TECH
+    const prev = iframe.style.width;
+    iframe.style.width = '99.9%';
+    requestAnimationFrame(() => {
+      iframe.style.width = prev || '100%';
+    });
+  }
+
+  function bindStageResize(mediaDiv, stage) {
+    if (!mediaDiv || !stage) return;
+    if (mediaDiv._gameResizeObserver) {
+      try {
+        mediaDiv._gameResizeObserver.disconnect();
+      } catch (_) {}
+    }
+    if (typeof ResizeObserver === 'function') {
+      let t = null;
+      const ro = new ResizeObserver(() => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          const iframe = mediaDiv.querySelector('iframe.videos-feed__game-iframe');
+          nudgeGameResize(iframe);
+        }, 50);
+      });
+      ro.observe(stage);
+      mediaDiv._gameResizeObserver = ro;
+    }
+  }
+
+  function ensureGameStage(mediaDiv) {
+    let stage = mediaDiv.querySelector('.videos-feed__game-stage');
+    if (!stage) {
+      stage = document.createElement('div');
+      stage.className = 'videos-feed__game-stage';
+      mediaDiv.insertBefore(stage, mediaDiv.firstChild);
+    }
+    bindStageResize(mediaDiv, stage);
+    return stage;
+  }
+
+  function createGameIframe(mediaDiv) {
+    const iframe = document.createElement('iframe');
+    iframe.className = 'videos-feed__game-iframe';
+    iframe.setAttribute('title', 'Embedded game');
+    iframe.setAttribute('allowfullscreen', 'true');
+    iframe.setAttribute(
+      'allow',
+      'fullscreen; gamepad; accelerometer; gyroscope; autoplay; clipboard-write'
+    );
+    iframe.setAttribute(
+      'sandbox',
+      'allow-scripts allow-same-origin allow-pointer-lock allow-popups allow-forms allow-modals'
+    );
+    iframe.referrerPolicy = 'no-referrer-when-downgrade';
+    iframe.addEventListener('load', () => {
+      const loaded = iframe.dataset.loadedUrl;
+      if (!loaded) return;
+      const srcAttr = iframe.getAttribute('src') || '';
+      if (!srcAttr || srcAttr === 'about:blank') return;
+      // אם כבר הוחלף iframe – מתעלמים | HYPER CORE TECH
+      if (!iframe.isConnected) return;
+      mediaDiv.dataset.gamePrepared = '1';
+      const ph = mediaDiv.querySelector('.videos-feed__game-placeholder');
+      if (ph) ph.hidden = true;
+      hideGamePlayOverlay(mediaDiv);
+      setTimeout(() => nudgeGameResize(iframe), 50);
+      setTimeout(() => nudgeGameResize(iframe), 300);
+      setTimeout(() => nudgeGameResize(iframe), 800);
+    });
+    return iframe;
+  }
+
+  function ensureGameFrame(mediaDiv, url, options = {}) {
+    if (!mediaDiv || !url) return null;
+    const forced = options.force === true || mediaDiv.dataset.gameForced === '1';
+    const allowed = isPlayableGameUrl(url) || (forced && canEmbedGameUrl(url));
+    if (isBlockedGameUrl(url) || !allowed) {
+      console.warn('[game-embed] blocked or unsupported game url', url);
+      return null;
+    }
+    if (forced) mediaDiv.dataset.gameForced = '1';
+    removeGameBadge(mediaDiv);
+    hideGamePlayOverlay(mediaDiv);
+    ensureGameFullscreenControls(mediaDiv);
+    ensureGameScrollShield(mediaDiv);
+
+    const stage = ensureGameStage(mediaDiv);
+    let iframe = stage.querySelector('iframe.videos-feed__game-iframe');
+
+    if (options.load) {
+      const srcAttr = iframe ? (iframe.getAttribute('src') || '') : '';
+      const needsFresh = options.forceReload
+        || !iframe
+        || iframe.dataset.loadedUrl !== url
+        || !srcAttr
+        || srcAttr === 'about:blank';
+
+      if (needsFresh) {
+        // מוחקים iframe ישן לגמרי – עוצר סאונד בלי לשבור טעינה מחדש | HYPER CORE TECH
+        if (iframe) {
+          clearTimeout(mediaDiv._gamePlaceholderTimer);
+          try { iframe.src = 'about:blank'; } catch (_) {}
+          iframe.remove();
+          iframe = null;
+        }
+        iframe = createGameIframe(mediaDiv);
+        stage.appendChild(iframe);
+        setGamePlaceholder(mediaDiv, options.loadingLabel || 'טוען משחק...');
+        mediaDiv.dataset.gamePrepared = '0';
+        iframe.dataset.loadedUrl = url;
+        iframe.src = url;
+        clearTimeout(mediaDiv._gamePlaceholderTimer);
+        mediaDiv._gamePlaceholderTimer = setTimeout(() => {
+          if (!mediaDiv.isConnected || !iframe.isConnected) return;
+          if (iframe.dataset.loadedUrl !== url) return;
+          const liveSrc = iframe.getAttribute('src') || '';
+          if (!liveSrc || liveSrc === 'about:blank') return;
+          mediaDiv.dataset.gamePrepared = '1';
+          const ph = mediaDiv.querySelector('.videos-feed__game-placeholder');
+          if (ph) ph.hidden = true;
+        }, 2000);
+      }
+    } else if (!iframe) {
+      // שלד בלי טעינה לפרילוד ויזואלי בלבד | HYPER CORE TECH
+      iframe = createGameIframe(mediaDiv);
+      stage.appendChild(iframe);
+    }
+
+    return iframe;
+  }
+
+  function silenceGameFrame(mediaDiv) {
+    // עוצר סאונד – מסיר את ה-iframe לחלוטין | HYPER CORE TECH
+    if (!mediaDiv) return;
+    clearTimeout(mediaDiv._gamePlaceholderTimer);
+    const iframe = mediaDiv.querySelector('iframe.videos-feed__game-iframe');
+    if (iframe) {
+      try { iframe.src = 'about:blank'; } catch (_) {}
+      iframe.remove();
+    }
+    mediaDiv.dataset.gamePrepared = '0';
+    const ph = mediaDiv.querySelector('.videos-feed__game-placeholder');
+    if (ph) ph.hidden = false;
+  }
+
+  function unloadGameFrame(mediaDiv) {
+    if (!mediaDiv) return;
+    if (mediaDiv.classList.contains('is-game-fullscreen')) {
+      exitGameFullscreen(mediaDiv);
+    }
+    setGameInteractive(mediaDiv, false);
+    if (mediaDiv._gameResizeObserver) {
+      try {
+        mediaDiv._gameResizeObserver.disconnect();
+      } catch (_) {}
+      mediaDiv._gameResizeObserver = null;
+    }
+    silenceGameFrame(mediaDiv);
+    const stage = mediaDiv.querySelector('.videos-feed__game-stage');
+    if (stage) stage.remove();
+    mediaDiv.querySelectorAll(
+      '.videos-feed__game-scroll-shield, .videos-feed__game-scroll-lane'
+    ).forEach((el) => el.remove());
+    mediaDiv.dataset.gamePrepared = '0';
+  }
+
+  function prepareGameMedia(mediaDiv, options = {}) {
+    if (!mediaDiv) return;
+    const url = mediaDiv.dataset.gameUrl || '';
+    if (!url) return;
+    const shouldLoad = options.load === true
+      || (options.load !== false && mediaDiv.classList.contains('is-game-active'));
+    if (
+      shouldLoad
+      && !options.forceReload
+      && mediaDiv.dataset.gamePrepared === '1'
+    ) {
+      const iframe = mediaDiv.querySelector('iframe.videos-feed__game-iframe');
+      const srcAttr = iframe ? (iframe.getAttribute('src') || '') : '';
+      if (iframe && iframe.dataset.loadedUrl === url && srcAttr && srcAttr !== 'about:blank') {
+        nudgeGameResize(iframe);
+        return;
+      }
+    }
+    ensureGameFrame(mediaDiv, url, {
+      load: shouldLoad,
+      forceReload: options.forceReload === true,
+      force: mediaDiv.dataset.gameForced === '1' || options.force === true,
+      loadingLabel: options.loadingLabel || 'טוען משחק...',
+    });
+  }
+
+  function activateGameMedia(mediaDiv) {
+    if (!mediaDiv) return;
+    const url = mediaDiv.dataset.gameUrl || '';
+    if (!url) return;
+
+    const existing = mediaDiv.querySelector('iframe.videos-feed__game-iframe');
+    const srcAttr = existing ? (existing.getAttribute('src') || '') : '';
+    // iframe עם אותו URL כבר בטעינה/נטען – לא להרוס (זה גרם למסך טעינה אינסופי) | HYPER CORE TECH
+    const sameUrlLoading =
+      !!existing
+      && existing.dataset.loadedUrl === url
+      && !!srcAttr
+      && srcAttr !== 'about:blank';
+
+    if (sameUrlLoading) {
+      mediaDiv.classList.add('is-game-active');
+      mediaDiv.classList.remove('is-paused');
+      hideGamePlayOverlay(mediaDiv);
+      ensureGameFullscreenControls(mediaDiv);
+      ensureGameScrollShield(mediaDiv);
+      if (mediaDiv.dataset.gamePrepared === '1') {
+        requestAnimationFrame(() => nudgeGameResize(existing));
+      }
+      // עוצרים סאונד של אחרים בלי לגעת ב-iframe הזה | HYPER CORE TECH
+      document.querySelectorAll('.videos-feed__media[data-media-type="game-embed"].is-game-active').forEach((el) => {
+        if (el !== mediaDiv) softDeactivateGameMedia(el);
+      });
+      return;
+    }
+
+    // עוצרים סאונד של משחק פעיל אחר בלבד | HYPER CORE TECH
+    document.querySelectorAll('.videos-feed__media[data-media-type="game-embed"].is-game-active').forEach((el) => {
+      if (el !== mediaDiv) softDeactivateGameMedia(el);
+    });
+
+    mediaDiv.classList.add('is-game-active');
+    mediaDiv.classList.remove('is-paused');
+    // forceReload רק כשאין iframe תקין (אחרי silence) – לא בכל activate | HYPER CORE TECH
+    prepareGameMedia(mediaDiv, {
+      load: true,
+      forceReload: true,
+      loadingLabel: 'טוען משחק...',
+    });
+    hideGamePlayOverlay(mediaDiv);
+    ensureGameFullscreenControls(mediaDiv);
+    ensureGameScrollShield(mediaDiv);
+    requestAnimationFrame(() => {
+      nudgeGameResize(mediaDiv.querySelector('iframe.videos-feed__game-iframe'));
+    });
+  }
+
+  function softDeactivateGameMedia(mediaDiv) {
+    if (!mediaDiv) return;
+    if (mediaDiv.classList.contains('is-game-fullscreen')) {
+      exitGameFullscreen(mediaDiv);
+    }
+    // מסירים iframe רק ממשחק שהיה פעיל – עוצר סאונד בלי לגעת בשכנים | HYPER CORE TECH
+    const shouldSilence = mediaDiv.classList.contains('is-game-active');
+    mediaDiv.classList.remove('is-game-active');
+    setGameInteractive(mediaDiv, false);
+    hideGamePlayOverlay(mediaDiv);
+    if (shouldSilence) {
+      silenceGameFrame(mediaDiv);
+      setGamePlaceholder(mediaDiv, 'טוען משחק...');
+    }
+  }
+
+  function deactivateGameMedia(mediaDiv) {
+    if (!mediaDiv) return;
+    softDeactivateGameMedia(mediaDiv);
+    unloadGameFrame(mediaDiv);
+    setGamePlaceholder(mediaDiv, 'טוען משחק...');
+  }
+
+  function clearFsChromeTimer(mediaDiv) {
+    if (!mediaDiv || !mediaDiv._gameFsChromeTimer) return;
+    clearTimeout(mediaDiv._gameFsChromeTimer);
+    mediaDiv._gameFsChromeTimer = null;
+  }
+
+  function showGameFsChrome(mediaDiv) {
+    if (!mediaDiv || !mediaDiv.classList.contains('is-game-fullscreen')) return;
+    const closeBtn = mediaDiv.querySelector('.videos-game-fs-close');
+    if (!closeBtn) return;
+    closeBtn.hidden = false;
+    closeBtn.classList.remove('is-fs-chrome-hidden');
+    mediaDiv.classList.add('is-fs-chrome-visible');
+    clearFsChromeTimer(mediaDiv);
+    mediaDiv._gameFsChromeTimer = setTimeout(() => {
+      hideGameFsChrome(mediaDiv);
+    }, 5000);
+  }
+
+  function hideGameFsChrome(mediaDiv) {
+    if (!mediaDiv) return;
+    clearFsChromeTimer(mediaDiv);
+    const closeBtn = mediaDiv.querySelector('.videos-game-fs-close');
+    if (closeBtn) closeBtn.classList.add('is-fs-chrome-hidden');
+    mediaDiv.classList.remove('is-fs-chrome-visible');
+  }
+
+  function ensureGameFullscreenControls(mediaDiv) {
+    if (!mediaDiv) return;
+
+    if (!mediaDiv.querySelector('.videos-game-fs-btn')) {
+      const fsBtn = document.createElement('button');
+      fsBtn.type = 'button';
+      fsBtn.className = 'videos-game-fs-btn';
+      fsBtn.setAttribute('aria-label', 'מסך מלא');
+      fsBtn.innerHTML = '<i class="fa-solid fa-expand"></i>';
+      fsBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        enterGameFullscreen(mediaDiv);
+      });
+      mediaDiv.appendChild(fsBtn);
+    }
+
+    // כפתור שחרור לגלילה – ליד מסך מלא, מהבהב במצב משחק | HYPER CORE TECH
+    if (!mediaDiv.querySelector('.videos-game-release-btn')) {
+      const releaseBtn = document.createElement('button');
+      releaseBtn.type = 'button';
+      releaseBtn.className = 'videos-game-release-btn';
+      releaseBtn.setAttribute('aria-label', 'שחרר לגלילה');
+      releaseBtn.title = 'שחרר לגלילה';
+      releaseBtn.hidden = true;
+      releaseBtn.innerHTML = '<i class="fa-solid fa-arrow-down" aria-hidden="true"></i>';
+      releaseBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        releaseGameForScroll(mediaDiv);
+      });
+      releaseBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        releaseGameForScroll(mediaDiv);
+      }, { passive: false });
+      mediaDiv.appendChild(releaseBtn);
+    }
+
+    if (!mediaDiv.querySelector('.videos-game-release-toast')) {
+      const toast = document.createElement('div');
+      toast.className = 'videos-game-release-toast';
+      toast.setAttribute('role', 'status');
+      toast.hidden = true;
+      toast.innerHTML = [
+        '<i class="fa-solid fa-arrow-down" aria-hidden="true"></i>',
+        '<span>מצב משחק פעיל — לחצו ↓ כדי לשחרר ולהמשיך לגלול</span>',
+      ].join('');
+      mediaDiv.appendChild(toast);
+    }
+
+    if (!mediaDiv.querySelector('.videos-game-fs-close')) {
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'videos-game-fs-close';
+      closeBtn.setAttribute('aria-label', 'סגור מסך מלא');
+      closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      closeBtn.hidden = true;
+      closeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        exitGameFullscreen(mediaDiv);
+      });
+      mediaDiv.appendChild(closeBtn);
+    }
+
+    let edge = mediaDiv.querySelector('.videos-game-fs-edge');
+    if (!edge) {
+      edge = document.createElement('div');
+      edge.className = 'videos-game-fs-edge';
+      edge.setAttribute('aria-hidden', 'true');
+      mediaDiv.appendChild(edge);
+      const revealFromEdge = (e) => {
+        if (!mediaDiv.classList.contains('is-game-fullscreen')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        showGameFsChrome(mediaDiv);
+      };
+      edge.addEventListener('click', revealFromEdge);
+      edge.addEventListener('touchend', revealFromEdge, { passive: false });
+    }
+
+    syncGameReleaseUi(mediaDiv);
+  }
+
+  function enterGameFullscreen(mediaDiv) {
+    if (!mediaDiv) return;
+    const existing = document.querySelector('.videos-feed__media.is-game-fullscreen');
+    if (existing && existing !== mediaDiv) exitGameFullscreen(existing);
+    if (typeof App.exitLiveFullscreen === 'function') {
+      const liveFs = document.querySelector('.videos-feed__media.is-live-fullscreen');
+      if (liveFs) App.exitLiveFullscreen(liveFs);
+    }
+
+    activateGameMedia(mediaDiv);
+    mediaDiv.classList.add('is-game-fullscreen');
+    setGameInteractive(mediaDiv, true);
+    document.body.classList.add('game-embed-fullscreen');
+    const fsBtn = mediaDiv.querySelector('.videos-game-fs-btn');
+    if (fsBtn) fsBtn.hidden = true;
+    syncGameReleaseUi(mediaDiv);
+    showGameFsChrome(mediaDiv);
+
+    const afterLayout = () => {
+      const iframe = mediaDiv.querySelector('iframe.videos-feed__game-iframe');
+      nudgeGameResize(iframe);
+    };
+
+    try {
+      const req = mediaDiv.requestFullscreen
+        ? mediaDiv.requestFullscreen()
+        : (mediaDiv.webkitRequestFullscreen ? Promise.resolve(mediaDiv.webkitRequestFullscreen()) : null);
+      if (req && typeof req.then === 'function') {
+        req.then(afterLayout).catch(afterLayout);
+      } else {
+        afterLayout();
+      }
+    } catch (_) {
+      afterLayout();
+    }
+    setTimeout(afterLayout, 50);
+    setTimeout(afterLayout, 300);
+  }
+
+  function exitGameFullscreen(mediaDiv) {
+    if (!mediaDiv) {
+      document.body.classList.remove('game-embed-fullscreen');
+      return;
+    }
+    clearFsChromeTimer(mediaDiv);
+    mediaDiv.classList.remove('is-game-fullscreen', 'is-fs-chrome-visible');
+    setGameInteractive(mediaDiv, false);
+    document.body.classList.remove('game-embed-fullscreen');
+    const closeBtn = mediaDiv.querySelector('.videos-game-fs-close');
+    const fsBtn = mediaDiv.querySelector('.videos-game-fs-btn');
+    if (closeBtn) {
+      closeBtn.hidden = true;
+      closeBtn.classList.remove('is-fs-chrome-hidden');
+    }
+    if (fsBtn) fsBtn.hidden = false;
+    syncGameReleaseUi(mediaDiv);
+
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+    } catch (_) {}
+
+    requestAnimationFrame(() => {
+      nudgeGameResize(mediaDiv.querySelector('iframe.videos-feed__game-iframe'));
+    });
+  }
+
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) {
+      document.querySelectorAll('.videos-feed__media.is-game-fullscreen').forEach((el) => {
+        clearFsChromeTimer(el);
+        el.classList.remove('is-game-fullscreen', 'is-fs-chrome-visible');
+        setGameInteractive(el, false);
+        const closeBtn = el.querySelector('.videos-game-fs-close');
+        const fsBtn = el.querySelector('.videos-game-fs-btn');
+        if (closeBtn) {
+          closeBtn.hidden = true;
+          closeBtn.classList.remove('is-fs-chrome-hidden');
+        }
+        if (fsBtn) fsBtn.hidden = false;
+        nudgeGameResize(el.querySelector('iframe.videos-feed__game-iframe'));
+      });
+      document.body.classList.remove('game-embed-fullscreen');
+    } else {
+      const el = document.fullscreenElement;
+      if (el && el.classList && el.classList.contains('videos-feed__media--game')) {
+        nudgeGameResize(el.querySelector('iframe.videos-feed__game-iframe'));
+      }
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    document.querySelectorAll('.videos-feed__media--game iframe.videos-feed__game-iframe').forEach((iframe) => {
+      nudgeGameResize(iframe);
+    });
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const open = document.querySelector('.videos-feed__media.is-game-fullscreen');
+      if (open) exitGameFullscreen(open);
+    }
+  });
+
+  function buildComposeGamePreview(url) {
+    const wrap = document.createElement('div');
+    wrap.className = 'compose-game-preview';
+    wrap.innerHTML = [
+      '<div class="compose-game-preview__badge"><i class="fa-solid fa-gamepad"></i> משחק</div>',
+      '<div class="compose-game-preview__title">משחק HTML5 מזוהה</div>',
+      '<div class="compose-game-preview__url"></div>',
+    ].join('');
+    const urlEl = wrap.querySelector('.compose-game-preview__url');
+    if (urlEl) urlEl.textContent = url;
+    return wrap;
+  }
+
+  Object.assign(App, {
+    isPlayableGameUrl,
+    isBlockedGameUrl,
+    canEmbedGameUrl,
+    extractGameUrlFromText,
+    extractEmbeddableGameUrlFromText,
+    removeGameBadge,
+    ensureGameFrame,
+    prepareGameMedia,
+    unloadGameFrame,
+    activateGameMedia,
+    softDeactivateGameMedia,
+    deactivateGameMedia,
+    setGameInteractive,
+    releaseGameForScroll,
+    ensureGameScrollShield,
+    ensureGameFullscreenControls,
+    enterGameFullscreen,
+    exitGameFullscreen,
+    buildComposeGamePreview,
+  });
+
+  window.SosGameEmbed = {
+    isPlayableGameUrl,
+    canEmbedGameUrl,
+    extractGameUrlFromText,
+    extractEmbeddableGameUrlFromText,
+    prepareGameMedia,
+    activateGameMedia,
+    softDeactivateGameMedia,
+    deactivateGameMedia,
+    setGameInteractive,
+    releaseGameForScroll,
+    enterGameFullscreen,
+    exitGameFullscreen,
+    buildComposeGamePreview,
+  };
+})(window);

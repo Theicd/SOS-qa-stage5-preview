@@ -1,0 +1,376 @@
+/* =======================
+   עיצוב חלון אורח (guest-auth.css) – שחור/ציאן כמו תפריט הפרופיל | HYPER CORE TECH
+   ======================= */
+
+#guestAuthModal.modal {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  direction: rtl;
+}
+
+#guestAuthModal .modal-content {
+  width: min(420px, calc(100vw - 32px));
+  max-width: 450px;
+  text-align: center;
+  padding: 28px 24px;
+  background:
+    linear-gradient(145deg, rgba(8, 12, 20, 0.98) 0%, rgba(3, 10, 20, 0.99) 55%, rgba(12, 18, 28, 0.97) 100%);
+  color: #ffffff;
+  border-radius: 18px;
+  border: 1px solid rgba(40, 170, 255, 0.28);
+  box-shadow:
+    0 14px 40px rgba(0, 0, 0, 0.6),
+    0 0 18px rgba(0, 175, 255, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  position: relative;
+  animation: guestAuthSlideUp 0.28s ease-out;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+@keyframes guestAuthSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+#guestAuthModal .modal-close,
+#guestAuthModal [id^="btnBackFrom"] {
+  position: absolute;
+  top: 12px;
+  background: none !important;
+  border: none !important;
+  font-size: 26px;
+  cursor: pointer;
+  color: rgba(232, 247, 255, 0.75) !important;
+  line-height: 1;
+  padding: 4px 8px;
+  transition: color 0.2s, transform 0.2s, opacity 0.2s;
+  opacity: 0.9;
+}
+
+#guestAuthModal .modal-close {
+  left: 10px;
+  right: auto;
+}
+
+#guestAuthModal [id^="btnBackFrom"] {
+  right: 10px;
+  left: auto;
+}
+
+#guestAuthModal .modal-close:hover,
+#guestAuthModal [id^="btnBackFrom"]:hover {
+  color: #00afff !important;
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+#guestAuthModal h2 {
+  color: #e8f7ff !important;
+  font-weight: 700;
+  margin-bottom: 12px;
+  font-size: 1.35rem;
+}
+
+#guestAuthModal p,
+#guestAuthModal #guestAuthModalReason {
+  color: rgba(200, 220, 235, 0.78) !important;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin-bottom: 22px;
+}
+
+.auth-step {
+  animation: guestAuthFadeIn 0.25s ease-in;
+}
+
+@keyframes guestAuthFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+#guestAuthModal input[type="email"],
+#guestAuthModal input[type="text"],
+#guestAuthModal input[type="tel"],
+#guestAuthModal textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: 12px !important;
+  border: 1px solid rgba(40, 170, 255, 0.28) !important;
+  background: rgba(6, 12, 22, 0.95) !important;
+  color: #e8f7ff !important;
+  font-size: 15px;
+  direction: rtl;
+  text-align: right;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  resize: vertical;
+}
+
+#guestAuthModal textarea {
+  min-height: 120px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+#guestAuthModal input::placeholder,
+#guestAuthModal textarea::placeholder {
+  color: rgba(160, 190, 210, 0.45) !important;
+}
+
+#guestAuthModal input:focus,
+#guestAuthModal textarea:focus {
+  outline: none;
+  border-color: rgba(0, 175, 255, 0.55) !important;
+  box-shadow: 0 0 0 3px rgba(0, 175, 255, 0.18);
+  background: rgba(8, 16, 28, 0.98) !important;
+}
+
+.auth-legal-block {
+  text-align: right;
+  background: rgba(0, 175, 255, 0.06);
+  border: 1px solid rgba(40, 170, 255, 0.2);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.auth-legal-checkbox {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  color: rgba(220, 235, 245, 0.9);
+  font-size: 14px;
+  line-height: 1.5;
+  direction: rtl;
+  text-align: right;
+}
+
+.auth-legal-checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: #00afff;
+}
+
+.auth-legal-checkbox a {
+  color: #7fd4ff;
+  text-decoration: underline;
+}
+
+.auth-legal-note {
+  font-size: 13px;
+  color: rgba(180, 205, 220, 0.75);
+  margin: 8px 0 0;
+}
+
+#guestAuthModal .button-primary,
+#guestAuthModal .button-secondary {
+  width: 100%;
+  padding: 13px 16px;
+  border-radius: 12px;
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+
+#guestAuthModal .button-primary {
+  background: rgba(0, 175, 255, 0.18) !important;
+  color: #e8f7ff !important;
+  border: 1px solid rgba(0, 175, 255, 0.45) !important;
+  box-shadow:
+    0 0 16px rgba(0, 175, 255, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+#guestAuthModal .button-primary:hover:not(:disabled) {
+  background: rgba(0, 175, 255, 0.28) !important;
+  border-color: rgba(0, 175, 255, 0.65) !important;
+  box-shadow: 0 0 22px rgba(0, 175, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+#guestAuthModal .button-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+#guestAuthModal .button-secondary {
+  background: rgba(8, 14, 24, 0.9) !important;
+  color: #e8f7ff !important;
+  border: 1px solid rgba(40, 170, 255, 0.22) !important;
+}
+
+#guestAuthModal .button-secondary:hover {
+  background: rgba(12, 22, 36, 0.98) !important;
+  border-color: rgba(0, 175, 255, 0.4) !important;
+}
+
+#guestAuthModal #btnSkipAvatar {
+  background: transparent !important;
+  border: none !important;
+  color: rgba(180, 205, 220, 0.7) !important;
+  box-shadow: none !important;
+}
+
+#guestAuthModal #btnSkipAvatar:hover {
+  color: #00afff !important;
+}
+
+#avatarPreview {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  margin: 0 auto 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: rgba(6, 12, 22, 0.95) !important;
+  border: 2px solid rgba(40, 170, 255, 0.35) !important;
+  transition: border-color 0.25s;
+}
+
+#avatarPreview:hover {
+  border-color: #00afff !important;
+}
+
+#avatarPreview span {
+  color: rgba(160, 190, 210, 0.55) !important;
+}
+
+#keyConfirmCheckbox,
+#signupLegalAgree,
+#keyPolicyAgree {
+  accent-color: #00afff;
+}
+
+#loginStatus,
+#emailStatus,
+#nameStatus,
+#avatarStatus,
+#keyStatus,
+#inviteStatus {
+  min-height: 20px;
+  font-size: 14px;
+  text-align: center;
+  color: rgba(200, 220, 235, 0.75);
+}
+
+.status-error {
+  color: #ff8a9a !important;
+}
+
+.status-success {
+  color: #51cf66 !important;
+}
+
+#guestAuthModal .guest-auth-warn {
+  background: rgba(0, 175, 255, 0.08);
+  border: 1px solid rgba(0, 175, 255, 0.35);
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 18px;
+  text-align: right;
+}
+
+#guestAuthModal .guest-auth-warn p {
+  color: #9adfff !important;
+  margin: 0 !important;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+#guestAuthModal .guest-auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#guestAuthModal .guest-auth-paste-btn {
+  background: rgba(0, 175, 255, 0.1) !important;
+  border: 1px solid rgba(0, 175, 255, 0.45) !important;
+  color: #9adfff !important;
+  border-radius: 12px !important;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+#guestAuthModal .guest-auth-paste-btn:hover,
+#guestAuthModal .guest-auth-paste-btn:active {
+  background: rgba(0, 175, 255, 0.2) !important;
+  border-color: rgba(0, 175, 255, 0.7) !important;
+  color: #fff !important;
+}
+
+#guestAuthModal .guest-auth-login-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+}
+
+#guestAuthModal .guest-auth-login-actions > button {
+  flex: 1 1 0;
+  width: auto !important;
+  min-width: 0;
+  padding: 14px 12px !important;
+  font-size: 15px !important;
+  margin: 0 !important;
+}
+
+@media (max-width: 500px) {
+  #guestAuthModal .modal-content {
+    max-width: 95%;
+    padding: 22px 16px;
+    margin: 10px;
+  }
+
+  #guestAuthModal h2 {
+    font-size: 1.15rem !important;
+  }
+
+  #avatarPreview {
+    width: 100px;
+    height: 100px;
+  }
+}
+
+#guestAuthModal button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+#guestAuthModal .modal-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+#guestAuthModal .modal-content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+}
+
+#guestAuthModal .modal-content::-webkit-scrollbar-thumb {
+  background: rgba(0, 175, 255, 0.28);
+  border-radius: 10px;
+}

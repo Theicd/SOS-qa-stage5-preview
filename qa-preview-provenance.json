@@ -1,0 +1,17 @@
+﻿{
+    "status":  "QA_STATIC_PREVIEW_BUNDLE",
+    "sourceRepo":  "Theicd/SOS",
+    "sourceBranch":  "qa/stage5-dual-primary-qr-20261011",
+    "sourceCommit":  "870729172ce8067c07aa12ef2acfe3c35ca3d522",
+    "publishedVersion":  "2026.10.11-qa-stage5-dual-primary-w2",
+    "productionForbidden":  "https://sos010.com",
+    "builtAtUtc":  "2026-10-10T23:44:53.4456279Z",
+    "excludes":  [
+                     "android-shell",
+                     "admission-service",
+                     "node_modules",
+                     ".git",
+                     "credentials",
+                     "private keys"
+                 ]
+}

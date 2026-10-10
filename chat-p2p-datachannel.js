@@ -1,0 +1,1207 @@
+// חלק DataChannel P2P (chat-p2p-datachannel.js) – WebRTC DataChannel להודעות טקסט P2P
+// signaling דרך ריליי (kind 25055), אח"כ הכל P2P | HYPER CORE TECH
+(function initChatP2PDataChannel(window) {
+  const App = window.NostrApp || (window.NostrApp = {});
+  const NostrTools = window.NostrTools;
+  try { console.log('[CHAT/PERSIST] MODULE chat-p2p-datachannel.js v=20260913p3'); } catch (_) {}
+  try {
+    if (/(?:^|[?&])p2pHeadless=1(?:&|$)/.test(String(window.location.search || ''))) {
+      window.__sosP2pHeadless = true;
+      document.documentElement.setAttribute('data-sos-p2p-headless', '1');
+    }
+  } catch (_) {}
+
+  // חלק הגדרות (chat-p2p-datachannel.js) – קונפיגורציה | HYPER CORE TECH
+  const RTC_CFG = {
+    iceServers:
+      (Array.isArray(App.RTC_ICE_SERVERS) && App.RTC_ICE_SERVERS.length > 0
+        ? App.RTC_ICE_SERVERS
+        : (Array.isArray(window.NostrRTC_ICE) && window.NostrRTC_ICE.length > 0
+            ? window.NostrRTC_ICE
+            : [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]))
+  };
+  const SIG_KIND = 25055;
+  const DC_LABEL = 'sos-chat';
+  const ICE_BATCH_MS = 800;
+  const RECONN_MS = 5000;
+  const MAX_RECONN = window.__sosP2pHeadless ? 24 : 3;
+  const OFFER_RETRY_MS = 12000; // retry offer אם לא נענה תוך 12 שניות (סיגנלינג דרך ריליי איטי)
+  const MAX_OFFER_RETRY = window.__sosP2pHeadless ? 12 : 3; // כמו גיבוי — בלי הצפת ריליי על peers מתים | HYPER CORE TECH
+  const CONNECT_STAGGER_MS = 1800; // מרווח בין חיבורי initiator במקביל | HYPER CORE TECH
+  const MAX_PARALLEL_CONNECTING = 3; // עד 3 offers פעילים במקביל | HYPER CORE TECH
+  // חלק keepalive (chat-p2p-datachannel.js) – ping תקופתי לשמירת DC פתוח מול NAT/firewall timeout | HYPER CORE TECH
+  const DC_KEEPALIVE_MS = 30000;
+  const SIG_SINCE_SEC = 3600; // חלון since - שעה (סובלני להיסט זמן בין מכשירים)
+  const SIG_MAX_AGE_SEC = 3600; // התעלם מסיגנלים ישנים מ-שעה (מכסה היסט זמן משמעותי)
+  const NEED_OFFER_INBOUND_MS = 8000; // מראה את שער ה-outbound של need-offer | HYPER CORE TECH
+  const SIG_RATE_WINDOW_MS = 10000;
+  const SIG_RATE_MAX_OFFER = 12; // offers/answers לגיטימיים נדירים
+  const SIG_RATE_MAX_CANDS = 120; // ICE burst טבעי — גבוה בכוונה
+  const SIG_RATE_MAX_OTHER = 20;
+  const DC_CHAT_TEXT_MAX = 16000;
+  const DC_CHAT_ID_MAX = 256;
+  const SIG_RATE_BUCKETS = new Map();
+  const SIG_RATE_BUCKET_CAP = 400;
+
+  function allowPeerSignalRate(peer, type) {
+    const k = String(peer || '').toLowerCase();
+    if (!k) return false;
+    const now = Date.now();
+    let row = SIG_RATE_BUCKETS.get(k);
+    if (!row || now - row.start >= SIG_RATE_WINDOW_MS) {
+      row = { start: now, offer: 0, cands: 0, other: 0 };
+      SIG_RATE_BUCKETS.set(k, row);
+    }
+    if (SIG_RATE_BUCKETS.size > SIG_RATE_BUCKET_CAP) {
+      const keys = [...SIG_RATE_BUCKETS.keys()];
+      for (let i = 0; i < Math.floor(keys.length / 2); i += 1) SIG_RATE_BUCKETS.delete(keys[i]);
+    }
+    if (type === 'dc-offer' || type === 'dc-answer') {
+      row.offer += 1;
+      return row.offer <= SIG_RATE_MAX_OFFER;
+    }
+    if (type === 'dc-candidates') {
+      row.cands += 1;
+      return row.cands <= SIG_RATE_MAX_CANDS;
+    }
+    row.other += 1;
+    return row.other <= SIG_RATE_MAX_OTHER;
+  }
+
+  // חלק מצב (chat-p2p-datachannel.js) – per-peer connections | HYPER CORE TECH
+  const peers = new Map();
+  let sigSub = null, keepTimer = null, lastSigAt = 0;
+  let subReady = false; // האם ה-subscription פעיל וקיבל eose
+  // חלק תור חיבורים (chat-p2p-datachannel.js) – מדורג ל-10+ peers בלי הצפת סיגנלים | HYPER CORE TECH
+  const connectQueue = [];
+  let connectQueueRunning = false;
+  // חלק הודעות נכנסות (chat-p2p-datachannel.js) – מאזינים חיצוניים ללוג/ניטור בלי לשבור את זרימת הצ'אט | HYPER CORE TECH
+  const incomingMessageListeners = new Set();
+
+  function notifyIncomingMessage(peer, message) {
+    incomingMessageListeners.forEach((listener) => {
+      try {
+        listener(peer, message);
+      } catch (err) {
+        console.warn('[DC] incoming listener failed:', err);
+      }
+    });
+  }
+
+  function subscribeIncomingMessages(listener) {
+    if (typeof listener !== 'function') {
+      return () => {};
+    }
+    incomingMessageListeners.add(listener);
+    return () => incomingMessageListeners.delete(listener);
+  }
+
+  // חלק מצב (chat-p2p-datachannel.js) – remoteCandsBuf: באפר ICE, gotAnswer: התקבלה תשובה, offerId/lastOfferId למניעת תשובות ישנות | HYPER CORE TECH
+  function newPS() { return { pc:null, dc:null, status:'idle', iceQ:[], iceT:null, reconnT:null, reconnN:0, init:false, seen:new Set(), offerRetryT:null, offerRetryN:0, remoteCandsBuf:[], gotAnswer:false, lastOfferAt:0, lastNeedOfferAt:0, offerId:null, lastOfferId:null, sigTransport:'', urgent:false, phaseT:null, graceT:null, lastCounterResetAt:0 }; }
+
+  // חלק מכונת מצבים (chat-p2p-datachannel.js) – מעברים מפורשים + ראיות לסיווג כשל (ללא תוכן/SDP) | HYPER CORE TECH
+  const COUNTER_RESET_MIN_MS = 30000;
+  function trk(k) { return App.P2pConn ? App.P2pConn.peer(k) : null; }
+  function ev(k) { const t = trk(k); return t ? t.evidence : {}; }
+  function goState(k, state, info) { const t = trk(k); if (t) t.transition(state, info); }
+  function clearPhaseTimer(s) { if (s && s.phaseT) { clearTimeout(s.phaseT); s.phaseT = null; } }
+  function clearGraceTimer(s) { if (s && s.graceT) { clearTimeout(s.graceT); s.graceT = null; } }
+  function presenceAgeMs(k) {
+    try {
+      const p = typeof App.getChatPresence === 'function' ? App.getChatPresence(k) : null;
+      const sec = p && Number(p.lastSeenAt);
+      return sec > 0 ? Math.max(0, Date.now() - sec * 1000) : Infinity;
+    } catch (_) { return Infinity; }
+  }
+  function failureEvidence(k, extra) {
+    const e = ev(k);
+    return Object.assign({
+      publishOk: e.publishOk, publishReasons: e.publishReasons, negotiationStarted: e.negotiationStarted,
+      peerSignalSeen: e.peerSignalSeen, lastPeerRxAgeMs: e.lastPeerRxAt ? Date.now() - e.lastPeerRxAt : Infinity,
+      presenceAgeMs: presenceAgeMs(k), iceState: e.iceState, pcState: e.pcState, dcState: e.dcState,
+      iceEverConnected: e.iceEverConnected, dcEverOpen: e.dcEverOpen, dcError: e.dcError,
+      localCandidates: e.localCandidates, remoteCandidates: e.remoteCandidates,
+    }, extra || {});
+  }
+  function failPeer(k, extra, detail) {
+    const t = trk(k);
+    if (!t || !App.P2pConn) return null;
+    return t.fail(App.P2pConn.classifyConnectFailure(failureEvidence(k, extra)), { detail });
+  }
+  function armPhaseDeadline(k, phase, onExpire) {
+    const s = ensPS(k);
+    clearPhaseTimer(s);
+    if (!App.P2pConn) return;
+    s.phaseT = setTimeout(() => { s.phaseT = null; onExpire(); }, App.P2pConn.deadline(phase, 'hard'));
+  }
+  function observePublish(k, type, pub) {
+    const isNegotiation = type === 'dc-offer' || type === 'dc-answer' || type === 'dc-need-offer';
+    if (!isNegotiation) return;
+    const hardMs = App.P2pConn ? App.P2pConn.deadline('SIGNAL_PUBLISH', 'hard') : 4000;
+    const withTimeout = (p) => Promise.race([Promise.resolve(p), new Promise((_, rej) => setTimeout(() => rej(new Error('publish timeout')), hardMs))]);
+    (async () => {
+      let list = pub;
+      if (list && !Array.isArray(list) && typeof list.then === 'function') {
+        try { list = await withTimeout(list); } catch (e) { list = [Promise.reject(e)]; }
+      }
+      if (!Array.isArray(list)) list = list ? [list] : [];
+      if (!list.length) list = [Promise.reject(new Error('no relays'))];
+      const reasons = [];
+      let ok = false;
+      await Promise.all(list.map((p) => withTimeout(p).then(() => { ok = true; }).catch((e) => { reasons.push(e && e.message ? e.message : String(e)); })));
+      const e = ev(k);
+      if (ok) { e.publishOk = true; if (type === 'dc-offer' && (trk(k) || {}).state === 'OFFER_SENT') goState(k, 'ANSWER_WAIT'); return; }
+      if (e.publishOk === true || e.negotiationStarted) return;
+      e.publishOk = false;
+      e.publishReasons = reasons.slice(0, 8);
+      failPeer(k, null, 'publish_' + type);
+    })().catch(() => {});
+  }
+  function getPS(k) { return peers.get(k.toLowerCase())||null; }
+  function ensPS(k) { k=k.toLowerCase(); if(!peers.has(k)) peers.set(k,newPS()); return peers.get(k); }
+  function isValidPeerKey(key) { return typeof key === 'string' && /^[0-9a-f]{64}$/i.test(key.trim()); }
+
+  // חלק תפקידים (chat-p2p-datachannel.js) – pubkey נמוך = initiator (שולח offers), גבוה = responder (רק עונה) | HYPER CORE TECH
+  function amInitiator(peer) { return (App.publicKey||'').toLowerCase() < String(peer||'').toLowerCase(); }
+
+  function canUseMesh(p) {
+    try {
+      const b = window.AndroidBridge;
+      if (!b || typeof b.isEmergencyPeerReachable !== 'function') return false;
+      const v = b.isEmergencyPeerReachable(p);
+      return v === true || v === 'true';
+    } catch (_) { return false; }
+  }
+
+  function canSignal(p) {
+    return canUseMesh(p) || !!(App.pool && App.publicKey && App.SosCryptoSigner?.hasIdentityKey());
+  }
+
+  function notifyWebViewP2pReady() {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.notifyWebViewP2pReady === 'function') {
+        window.AndroidBridge.notifyWebViewP2pReady();
+      } else if (window.SosNativeShell && typeof window.SosNativeShell.notifyWebViewP2pReady === 'function') {
+        window.SosNativeShell.notifyWebViewP2pReady();
+      }
+      console.log('[P2P-OWNER] peer=* owner=WEBVIEW');
+    } catch (_) {}
+  }
+
+  // חלק ניקוי (chat-p2p-datachannel.js) – סגירת חיבור | HYPER CORE TECH
+  function cleanup(k) {
+    k=k.toLowerCase(); const s=peers.get(k); if(!s) return;
+    if(s.iceT) clearTimeout(s.iceT); if(s.reconnT) clearTimeout(s.reconnT); if(s.offerRetryT) clearTimeout(s.offerRetryT);
+    clearPhaseTimer(s); clearGraceTimer(s);
+    { const t=trk(k); if(t&&t.state!=='FAILED'&&t.state!=='PEER_OFFLINE') t.transition('CLOSED'); }
+    // חלק keepalive cleanup (chat-p2p-datachannel.js) – עצירת ping timer בניקוי | HYPER CORE TECH
+    if(s._keepAliveT){clearInterval(s._keepAliveT);s._keepAliveT=null;}
+    if(s.dc){s.dc.onopen=null;s.dc.onclose=null;s.dc.onerror=null;s.dc.onmessage=null;}
+    try{if(s.dc)s.dc.close();}catch{} try{if(s.pc)s.pc.close();}catch{}
+    s.pc=null; s.dc=null; s.status='closed'; s.iceQ=[]; s.offerRetryT=null; s.gotAnswer=false; s.lastOfferAt=0; s.remoteCandsBuf=[]; s.offerId=null; s.lastOfferId=null;
+  }
+
+  // חלק signaling (chat-p2p-datachannel.js) – שליחת אותות דרך ריליי | HYPER CORE TECH
+  function roomId(p) { const a=(App.publicKey||'').toLowerCase(),b=(p||'').toLowerCase(); return a<b?`dc:${a}:${b}`:`dc:${b}:${a}`; }
+
+  async function sendMeshSig(p, type, data) {
+    try {
+      const b = window.AndroidBridge;
+      if (!b || typeof b.sendWebRTCSignal !== 'function') return false;
+      const affinity = getPS(p)?.sigTransport === 'MESH';
+      if (!affinity && !canUseMesh(p)) return false;
+      if (!App.P2pSecureV2 || !App.P2pSecureV2.isLocalSecureP2pV2() || !App.P2pSecureV2.isPeerSecureP2pV2(p)) {
+        return false;
+      }
+      const wire = await App.P2pSecureV2.encryptMeshSignal(p, type, data);
+      const sent = b.sendWebRTCSignal(p, wire);
+      if (sent === true || sent === 'true') {
+        const s = ensPS(p);
+        s.sigTransport = 'MESH';
+        if (type === 'dc-offer' || type === 'dc-answer' || type === 'dc-need-offer') { ev(p).publishOk = true; if (type === 'dc-offer' && (trk(p) || {}).state === 'OFFER_SENT') goState(p, 'ANSWER_WAIT'); }
+        console.log(`[P2P-SIG] SEND type=${type} peer=${String(p).slice(0,8)} transport=MESH_SECURE`);
+        return true;
+      }
+    } catch (e) {
+      console.warn('[DC] secure mesh sig failed:', e && e.message ? e.message : e);
+    }
+    return false;
+  }
+
+  async function sendSig(p, type, data) {
+    if(!isValidPeerKey(p)) return;
+    if (await sendMeshSig(p, type, data)) return;
+    if(!App.pool||!App.publicKey||!App.SosCryptoSigner?.hasIdentityKey()) { observePublish(p, type, []); return; }
+    try {
+      const raw=data?JSON.stringify(data):'';
+      const enc=raw?await Promise.resolve(App.SosCryptoSigner.nip04Encrypt(p,raw)):'';
+      const sigEv={kind:SIG_KIND,pubkey:App.publicKey,created_at:Math.floor(Date.now()/1000),tags:[['type',type],['p',p.toLowerCase()],['r',roomId(p)]],content:enc};
+      if (typeof App.SosCryptoSigner.signP2pSignal !== 'function') return;
+      const signed=await Promise.resolve(App.SosCryptoSigner.signP2pSignal(sigEv));
+      await new Promise(r=>setTimeout(r,80));
+      const pub=App.pool.publish(App.relayUrls,signed);
+      if(Array.isArray(pub)) Promise.allSettled(pub).catch(()=>{});
+      observePublish(p, type, pub);
+      console.log(`[P2P-SIG] SEND type=${type} peer=${p.slice(0,8)} transport=NOSTR`);
+    } catch(e){ console.warn('[DC] sendSig:',e); observePublish(p, type, [Promise.reject(e)]); }
+  }
+
+  // חלק ICE batch (chat-p2p-datachannel.js) – צבירת candidates | HYPER CORE TECH
+  function flushICE(k){ const s=ensPS(k); const b=s.iceQ.splice(0); if(b.length) sendSig(k,'dc-candidates',b); if(s.iceT){clearTimeout(s.iceT);s.iceT=null;} }
+  function qICE(k,c){ const s=ensPS(k); if(!c){flushICE(k);return;} s.iceQ.push(c); if(s.iceT)clearTimeout(s.iceT); s.iceT=setTimeout(()=>flushICE(k),ICE_BATCH_MS); }
+
+  // חלק DataChannel (chat-p2p-datachannel.js) – חיבור אירועים לערוץ + בדיקת stale למניעת לולאת reconnect | HYPER CORE TECH
+  function wireDC(k,dc) {
+    k=k.toLowerCase(); const s=ensPS(k); s.dc=dc;
+    try { dc.binaryType = 'arraybuffer'; } catch (_) {}
+    dc.onopen=()=>{
+      if(s.dc!==dc) return; s.status='connected'; s.reconnN=0; s.offerRetryN=0;
+      if(s.offerRetryT){clearTimeout(s.offerRetryT);s.offerRetryT=null;}
+      clearPhaseTimer(s);
+      { const e=ev(k); e.dcState='open'; e.dcEverOpen=true; e.dcError=false; e.lastPeerRxAt=Date.now(); }
+      goState(k,'DC_OPEN');
+      console.log(`[P2P-DC] peer=${k.slice(0,8)} OPEN`);
+      if(s.closedAt){
+        const durationMs = Date.now() - s.closedAt;
+        s.closedAt = 0;
+        console.log(`[MOBILITY] DC_RESTORED durationMs=${durationMs} peer=${k.slice(0,8)}`);
+      }
+      if(typeof App.onDataChannelStateChange==='function') App.onDataChannelStateChange(k,'open');
+      try{
+        if(window.SosNativeShell&&typeof window.SosNativeShell.syncP2pPeers==='function'){
+          const keys=[];
+          peers.forEach((st,pk)=>{ if(st&&(st.status==='connected'||st.init)) keys.push(pk); });
+          if(!keys.includes(k)) keys.unshift(k);
+          window.SosNativeShell.syncP2pPeers(keys.slice(0,24).join(','));
+        }
+      }catch{}
+      try { if (typeof App.drainPendingReadReceipts === 'function') App.drainPendingReadReceipts(k); } catch {}
+      try { if (window.SOSEmergency && typeof window.SOSEmergency.drainMeshOutbox === 'function') window.SOSEmergency.drainMeshOutbox(); } catch {}
+      try { if (typeof App.onChatDataChannelOpen === 'function') App.onChatDataChannelOpen(k, dc); } catch {}
+      // חלק keepalive start (chat-p2p-datachannel.js) – שליחת ping תקופתי לשמירת DC פתוח | HYPER CORE TECH
+      if(s._keepAliveT) clearInterval(s._keepAliveT);
+      s._keepAliveT=setInterval(()=>{
+        if(s.dc&&s.dc.readyState==='open'){ try{s.dc.send(JSON.stringify({type:'ping',ts:Date.now()}));}catch{} }
+        else { clearInterval(s._keepAliveT); s._keepAliveT=null; }
+      },DC_KEEPALIVE_MS);
+    };
+    dc.onclose=()=>{
+      if(s.dc!==dc) return; s.dc=null; s.status='closed'; s.closedAt=Date.now();
+      // חלק keepalive stop (chat-p2p-datachannel.js) – עצירת ping כשהערוץ נסגר | HYPER CORE TECH
+      if(s._keepAliveT){clearInterval(s._keepAliveT);s._keepAliveT=null;}
+      clearPhaseTimer(s);
+      { const e=ev(k); const wasOpen=e.dcEverOpen; e.dcState='closed'; if(wasOpen) failPeer(k,null,'dc_onclose'); else goState(k,'CLOSED'); }
+      console.log(`[P2P-DC] peer=${k.slice(0,8)} CLOSED reason=onclose`);
+      if(typeof App.onDataChannelStateChange==='function') App.onDataChannelStateChange(k,'closed');
+      try { if (typeof App.onChatDataChannelClosed === 'function') App.onChatDataChannelClosed(k); } catch {}
+      maybeReconn(k);
+    };
+    dc.onerror=(e)=>{ if(s.dc!==dc) return; ev(k).dcError=true; console.warn(`[DC] ERR ${k.slice(0,8)}:`,e); };
+    dc.onmessage=(ev)=>onMsg(k,ev.data);
+  }
+
+  // חלק PeerConnection (chat-p2p-datachannel.js) – יצירת RTCPeerConnection + בדיקת stale למניעת לולאת reconnect | HYPER CORE TECH
+  function createPC(k) {
+    k=k.toLowerCase(); const s=ensPS(k); if(s.pc) try{s.pc.close();}catch{}
+    const pc=new RTCPeerConnection(RTC_CFG); s.pc=pc; s.status='connecting';
+    pc.onicecandidate=(ice)=>{ if(s.pc!==pc) return; if(ice.candidate) ev(k).localCandidates=(ev(k).localCandidates||0)+1; qICE(k,ice.candidate||null); };
+    // חלק ניתוב ערוצים (chat-p2p-datachannel.js) – ערוץ file-transfer מנותב למערכת קבצים, sos-chat לצ'אט | HYPER CORE TECH
+    pc.ondatachannel=(ev)=>{ if(s.pc!==pc) return; const ch=ev.channel; if(ch.label==='file-transfer'){console.log(`[DC] 📥 file DC from ${k.slice(0,8)}`);if(typeof App.onFileDataChannel==='function')App.onFileDataChannel(k,ch);return;} console.log(`[DC] 📥 chat DC ${k.slice(0,8)}`); wireDC(k,ch); };
+    // חלק disconnected grace (chat-p2p-datachannel.js) – disconnected הוא זמני; לא הורגים העברה פעילה מיד | HYPER CORE TECH
+    const onTransportState=(label,st)=>{
+      let activeXfer=false;
+      try{ activeXfer = typeof App.hasActiveChatFileTransfer==='function' && App.hasActiveChatFileTransfer(k); }catch{}
+      if(st==='connected'||st==='completed'){
+        clearGraceTimer(s);
+        if(label==='ICE'){
+          ev(k).iceEverConnected=true;
+          if(!(s.dc&&s.dc.readyState==='open')){
+            goState(k,'DC_CONNECTING');
+            armPhaseDeadline(k,'DC_OPEN',()=>{ if(s.pc!==pc||(s.dc&&s.dc.readyState==='open')) return; failPeer(k,null,'dc_open_deadline'); cleanup(k); maybeReconn(k); });
+          }
+        }
+        return;
+      }
+      if(st==='disconnected'){
+        if(s.graceT) return;
+        const graceMs=App.P2pConn?App.P2pConn.deadline('ICE_DISCONNECT_GRACE',activeXfer?'hard':'soft'):5000;
+        console.warn(`[P2P-${label}] disconnected-grace peer=${k.slice(0,8)} ms=${graceMs} ACTIVE_TRANSFER=${activeXfer}`);
+        s.graceT=setTimeout(()=>{
+          s.graceT=null;
+          if(s.pc!==pc) return;
+          const now=pc.iceConnectionState;
+          if(now==='connected'||now==='completed') return;
+          console.warn(`[P2P-${label}] cleanup-after-grace peer=${k.slice(0,8)} state=${now}`);
+          failPeer(k,{iceState:now},'disconnect_grace');
+          cleanup(k);maybeReconn(k);
+        },graceMs);
+        return;
+      }
+      if(st==='failed'||st==='closed'){
+        console.warn(`[P2P-${label}] cleanup-on-${st} peer=${k.slice(0,8)} ACTIVE_TRANSFER=${activeXfer}`);
+        if(st==='failed') failPeer(k,null,label.toLowerCase()+'_failed');
+        cleanup(k);maybeReconn(k);
+      }
+    };
+    pc.oniceconnectionstatechange=()=>{ if(s.pc!==pc) return; ev(k).iceState=pc.iceConnectionState; console.log(`[P2P-ICE] peer=${k.slice(0,8)} state=${pc.iceConnectionState}`); onTransportState('ICE',pc.iceConnectionState); };
+    pc.onconnectionstatechange=()=>{ if(s.pc!==pc) return; ev(k).pcState=pc.connectionState; console.log(`[P2P-PC] peer=${k.slice(0,8)} state=${pc.connectionState}`); if(pc.connectionState!=='connected') onTransportState('PC',pc.connectionState); };
+    return pc;
+  }
+
+  // חלק חיבור (chat-p2p-datachannel.js) – רק initiator שולח offers, responder ממתין / מבקש offer | HYPER CORE TECH
+  const urgentConnect = new Set();
+  function countConnecting() {
+    let n = 0;
+    peers.forEach((s) => { if (s && s.status === 'connecting') n += 1; });
+    return n;
+  }
+
+  async function pumpConnectQueue() {
+    if (connectQueueRunning) return;
+    connectQueueRunning = true;
+    try {
+      while (connectQueue.length) {
+        const next = connectQueue[0];
+        const urgent = urgentConnect.has(next);
+        const cap = urgent ? MAX_PARALLEL_CONNECTING + 2 : MAX_PARALLEL_CONNECTING;
+        if (countConnecting() >= cap) {
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+        const k = connectQueue.shift();
+        urgentConnect.delete(k);
+        if (!k) continue;
+        const ex = getPS(k);
+        if (ex && (ex.status === 'connected' || ex.status === 'connecting')) continue;
+        if (ex && ex.status === 'waiting') continue;
+        try {
+          await connectNow(k);
+        } catch (e) {
+          console.warn('[DC] queue connect fail:', k.slice(0, 8), e);
+        }
+        if (connectQueue.length) {
+          await new Promise((r) => setTimeout(r, urgent ? 200 : CONNECT_STAGGER_MS));
+        }
+      }
+    } finally {
+      connectQueueRunning = false;
+      if (connectQueue.length) pumpConnectQueue();
+    }
+  }
+
+  function enqueueConnect(peer, urgent) {
+    const k = String(peer || '').toLowerCase();
+    if (!isValidPeerKey(k)) return;
+    const ex = getPS(k);
+    if (ex && (ex.status === 'connected' || ex.status === 'connecting')) return;
+    if (ex && ex.status === 'waiting') return;
+    if (urgent) {
+      urgentConnect.add(k);
+      const idx = connectQueue.indexOf(k);
+      if (idx > 0) connectQueue.splice(idx, 1);
+      if (idx !== 0) connectQueue.unshift(k);
+    } else if (!connectQueue.includes(k)) {
+      connectQueue.push(k);
+    }
+    pumpConnectQueue();
+  }
+
+  async function requestOfferFromInitiator(k) {
+    const s = ensPS(k);
+    const now = Date.now();
+    if (s.lastNeedOfferAt && (now - s.lastNeedOfferAt) < 8000) return;
+    s.lastNeedOfferAt = now;
+    console.log(`[DC] 📨 מבקש offer מ-initiator ${k.slice(0, 8)}`);
+    await sendSig(k, 'dc-need-offer', { ts: now });
+  }
+
+  function nudgeInitiator(peer) {
+    const k = String(peer || '').toLowerCase();
+    if (!isValidPeerKey(k) || !amInitiator(k)) return;
+    const s = ensPS(k);
+    const now = Date.now();
+    // שער inbound — מונע סערת need-offer שמאפסת מונים ויוצרת offers | HYPER CORE TECH
+    if (s.lastInboundNeedOfferAt && (now - s.lastInboundNeedOfferAt) < NEED_OFFER_INBOUND_MS) {
+      console.warn('[SECURITY/RATE_DROP] type=dc-need-offer peer=' + k.slice(0, 8) + ' reason=inbound_throttle');
+      return;
+    }
+    s.lastInboundNeedOfferAt = now;
+    if (s.status === 'connected' && s.dc && s.dc.readyState === 'open') return;
+    if (s.status === 'connecting') return;
+    // לא מאפסים offerRetryN/reconnN לפי בקשת peer — מונע עקיפת MAX_* | HYPER CORE TECH
+    if (s.offerRetryN >= MAX_OFFER_RETRY || s.reconnN >= MAX_RECONN) return;
+    s.status = 'idle';
+    enqueueConnect(k, true);
+  }
+
+  async function connect(peer) {
+    if (!isValidPeerKey(peer)) return;
+    const k = peer.toLowerCase();
+    if (!App.publicKey || !canSignal(k)) return;
+    init();
+    const ex = getPS(k);
+    if (ex && ex.status === 'connected' && ex.dc && ex.dc.readyState === 'open') return;
+    if (!amInitiator(k)) {
+      const s = ensPS(k);
+      if (s.offerRetryT) { clearTimeout(s.offerRetryT); s.offerRetryT = null; }
+      const t = trk(k);
+      if (s.status !== 'waiting' && s.status !== 'connecting') { if (t) t.resetAttempt(); goState(k, 'SIGNALING'); }
+      s.status = 'waiting';
+      s.offerRetryN = 0;
+      console.log(`[DC] אני responder, ממתין ל-offer מ ${k.slice(0, 8)}`);
+      await requestOfferFromInitiator(k);
+      return;
+    }
+    if (ex && ex.status === 'connecting') return;
+    if (ex) { ex.offerRetryN = 0; ex.reconnN = 0; }
+    { const t = trk(k); if (t) t.resetAttempt(); }
+    goState(k, 'SIGNALING');
+    enqueueConnect(k, true);
+  }
+
+  async function connectNow(k) {
+    const ex = getPS(k);
+    if (ex && (ex.status === 'connected' || ex.status === 'connecting' || ex.status === 'waiting')) return;
+    if (!amInitiator(k)) {
+      const s = ensPS(k);
+      s.status = 'waiting';
+      return;
+    }
+    // איפוס מונה ניסיונות לחיבור חדש אחרי idle/gave-up | HYPER CORE TECH
+    const s = ensPS(k);
+    if (s.status === 'idle' || s.status === 'closed' || !s.status) {
+      s.offerRetryN = 0;
+    }
+    if (!subReady && !canUseMesh(k)) {
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        if (subReady) break;
+      }
+      if (!subReady) console.warn('[DC] sub not ready, connecting anyway');
+    }
+    await _sendOffer(k);
+  }
+
+  // חלק offer פנימי (chat-p2p-datachannel.js) – שליחת offer עם timer ל-retry | HYPER CORE TECH
+  async function _sendOffer(k) {
+    const s = ensPS(k);
+    s.init = true;
+    s.status = 'connecting';
+    s.gotAnswer = false;
+    clearPhaseTimer(s);
+    clearGraceTimer(s);
+    { const t = trk(k); if (t) t.resetAttempt(); }
+    goState(k, 'OFFER_SENT');
+    if (s.offerRetryT) {
+      clearTimeout(s.offerRetryT);
+      s.offerRetryT = null;
+    }
+    // חלק ניתוק PC+DC ישן (chat-p2p-datachannel.js) – מנתק handlers לפני סגירה למנוע stale callbacks | HYPER CORE TECH
+    if (s.dc) {
+      s.dc.onopen = null;
+      s.dc.onclose = null;
+      s.dc.onerror = null;
+      s.dc.onmessage = null;
+    }
+    if (s.pc) {
+      s.pc.onconnectionstatechange = null;
+      s.pc.oniceconnectionstatechange = null;
+      s.pc.ondatachannel = null;
+      try {
+        s.pc.close();
+      } catch {}
+    }
+    const pc = createPC(k);
+    const dc = pc.createDataChannel(DC_LABEL, { ordered: true });
+    wireDC(k, dc);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    s.offerId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // חלק offerId (chat-p2p-datachannel.js) – מזהה ייחודי לשיוך answer/offer | HYPER CORE TECH
+    await sendSig(k, 'dc-offer', { type: offer.type, sdp: offer.sdp, oid: s.offerId });
+    console.log(`[DC] 🔄 connecting ${k.slice(0, 8)} (attempt ${s.offerRetryN + 1})...`);
+    // כמו גיבוי: מרווח קבוע; אחרי MAX retries — עצירה (חיבור מחדש בפתיחת שיחה/שליחה) | HYPER CORE TECH
+    s.offerRetryT = setTimeout(() => {
+      s.offerRetryT = null;
+      if (s.status === 'connected' || s.gotAnswer) return;
+      s.offerRetryN++;
+      if (s.offerRetryN >= MAX_OFFER_RETRY) {
+        console.warn(`[DC] ❌ gave up on ${k.slice(0, 8)} after ${MAX_OFFER_RETRY} retries`);
+        s.status = 'idle';
+        failPeer(k, null, 'offer_retries_exhausted');
+        return;
+      }
+      console.log(`[DC] 🔁 retry offer ${k.slice(0, 8)} (#${s.offerRetryN})`);
+      _sendOffer(k);
+    }, OFFER_RETRY_MS);
+  }
+
+  // חלק offer נכנס (chat-p2p-datachannel.js) – רק responder מטפל ב-offers (אין עוד glare) | HYPER CORE TECH
+  async function onOffer(peer,offer) {
+    const k=peer.toLowerCase(), s=ensPS(k);
+    if(s.status==='connected'&&s.dc&&s.dc.readyState==='open') return;
+    if(amInitiator(k)) {
+      // APK ישן / פיד שלח offer כ-responder — לא לענות, לבקש שה-initiator ישלח | HYPER CORE TECH
+      console.log(`[DC] ↩️ ignore offer (I am initiator) ${k.slice(0,8)} — nudge`);
+      nudgeInitiator(k);
+      return;
+    }
+    const now=Date.now();
+    if(s.status==='connecting'&&s.lastOfferAt&&(now-s.lastOfferAt)<8000) return;
+    s.lastOfferAt=now;
+    const oid=offer?.oid||offer?._oid||null;
+    if(oid&&s.lastOfferId===oid) return;
+    s.lastOfferId=oid||s.lastOfferId;
+    if(s.dc){s.dc.onopen=null;s.dc.onclose=null;s.dc.onerror=null;s.dc.onmessage=null;}
+    if(s.pc){s.pc.onconnectionstatechange=null;s.pc.oniceconnectionstatechange=null;try{s.pc.close();}catch{}}
+    s.init=false; s.remoteCandsBuf=[]; clearPhaseTimer(s); clearGraceTimer(s);
+    { const t=trk(k); if(t) t.resetAttempt(); }
+    const pc=createPC(k);
+    await pc.setRemoteDescription({type:offer.type,sdp:offer.sdp});
+    { const e=ev(k); e.negotiationStarted=true; e.peerSignalSeen=true; }
+    await flushRemoteCands(k);
+    const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
+    await sendSig(k,'dc-answer',{type:ans.type,sdp:ans.sdp,oid:oid});
+    goState(k,'ICE_CONNECTING');
+    armIceDeadline(k,pc);
+    console.log(`[DC] 📨 answered offer from ${k.slice(0,8)}`);
+  }
+
+  function armIceDeadline(k,pc){
+    armPhaseDeadline(k,'ICE_CONNECT',()=>{
+      const s=getPS(k); if(!s||s.pc!==pc) return;
+      const st=pc.iceConnectionState;
+      if(st==='connected'||st==='completed') return;
+      failPeer(k,{phaseExpired:'ICE_CONNECT',iceState:st},'ice_deadline');
+      cleanup(k); maybeReconn(k);
+    });
+  }
+
+  async function onAnswer(peer,ans) {
+    if(!amInitiator(peer)) return; // responder לא אמור לקבל answers
+    const s=getPS(peer.toLowerCase()); if(!s||!s.pc) return;
+    const oid=ans?.oid||ans?._oid||null;
+    if(s.offerId&&oid&&oid!==s.offerId){ console.log(`[DC] ↩️ ignore stale answer ${peer.slice(0,8)}`); return; }
+    s.gotAnswer=true; if(s.offerRetryT){clearTimeout(s.offerRetryT);s.offerRetryT=null;}
+    console.log(`[DC] 📬 got answer from ${peer.slice(0,8)}`);
+    const pc=s.pc;
+    await pc.setRemoteDescription({type:ans.type,sdp:ans.sdp});
+    { const e=ev(peer); e.negotiationStarted=true; e.peerSignalSeen=true; }
+    goState(peer.toLowerCase(),'ICE_CONNECTING');
+    armIceDeadline(peer.toLowerCase(),pc);
+    await flushRemoteCands(peer.toLowerCase()); // החלת candidates שהגיעו לפני ה-answer
+  }
+
+  // חלק ICE נכנס (chat-p2p-datachannel.js) – אם אין remote description, שומר בבאפר ומחיל אחרי setRemoteDescription | HYPER CORE TECH
+  async function onCands(peer,cands) {
+    const s=getPS(peer.toLowerCase()); if(!s||!s.pc) return;
+    { const e=ev(peer); e.remoteCandidates=(e.remoteCandidates||0)+cands.filter(Boolean).length; }
+    if(!s.pc.remoteDescription) { s.remoteCandsBuf.push(...cands.filter(Boolean)); return; }
+    for(const c of cands){ if(!c) continue; try{await s.pc.addIceCandidate(new RTCIceCandidate(c));}catch(e){console.warn('[DC] ICE:',e);} }
+  }
+
+  // חלק flush באפר (chat-p2p-datachannel.js) – מחיל candidates שהצטברו אחרי שה-remote description נקבע | HYPER CORE TECH
+  async function flushRemoteCands(k) {
+    const s=getPS(k); if(!s||!s.pc||!s.pc.remoteDescription) return;
+    const buf=s.remoteCandsBuf.splice(0);
+    for(const c of buf){ try{await s.pc.addIceCandidate(new RTCIceCandidate(c));}catch{} }
+  }
+
+  // חלק אבטחה (chat-p2p-datachannel.js) – strict hash+sig לסיגנל ריליי 25055 | HYPER CORE TECH
+  function verifyIncomingP2pRelayEvent(event) {
+    let idLabel = '';
+    try {
+      idLabel = event && event.id ? String(event.id).slice(0, 8) : '';
+      const strict = (typeof App.strictVerifyNostrEvent === 'function')
+        ? App.strictVerifyNostrEvent
+        : (window.NostrEventIntegrity && window.NostrEventIntegrity.strictVerifyNostrEvent);
+      if (typeof strict !== 'function' || strict(event) !== true) {
+        console.warn('[SO-CALL SECURITY] rejected invalid P2P signal kind=25055 id=' + idLabel);
+        return false;
+      }
+      return true;
+    } catch (_err) {
+      console.warn('[SO-CALL SECURITY] rejected invalid P2P signal kind=25055 id=' + idLabel);
+      return false;
+    }
+  }
+
+  // חלק signal handler (chat-p2p-datachannel.js) – טיפול באירועי signaling | HYPER CORE TECH
+  async function handleSig(event) {
+    // סינון זול לפני verify/decrypt — מפחית CPU על firehose גלובלי של 25055 | HYPER CORE TECH
+    if (!event || typeof event !== 'object' || !event.pubkey) return;
+    if (event.pubkey === App.publicKey) return;
+    const selfKey = (App.publicKey || '').toLowerCase();
+    if (!selfKey) return;
+    const tags = Array.isArray(event.tags) ? event.tags : null;
+    if (!tags) return;
+    const pTag = tags.find((t) => Array.isArray(t) && t[0] === 'p' && t[1]);
+    if (!pTag || String(pTag[1]).toLowerCase() !== selfKey) return;
+    const tag = tags.find((t) => Array.isArray(t) && t[0] === 'type');
+    if (!tag) return;
+    const type = tag[1];
+    if (!type || typeof type !== 'string' || !type.startsWith('dc-')) return;
+    if (
+      type !== 'dc-offer' &&
+      type !== 'dc-answer' &&
+      type !== 'dc-candidates' &&
+      type !== 'dc-need-offer'
+    ) {
+      return;
+    }
+    const peer = String(event.pubkey).toLowerCase();
+    if (!isValidPeerKey(peer)) return;
+    const evAge = Math.floor(Date.now() / 1000) - (Number(event.created_at) || 0);
+    if (evAge > SIG_MAX_AGE_SEC) {
+      console.warn(
+        '[SO-CALL SECURITY] rejected stale or replayed live signal kind=25055 id=' +
+          (event && event.id ? String(event.id).slice(0, 8) : ''),
+      );
+      return;
+    }
+    if (!verifyIncomingP2pRelayEvent(event)) return;
+    if (!allowPeerSignalRate(peer, type)) {
+      console.warn('[SECURITY/RATE_DROP] type=' + type + ' peer=' + peer.slice(0, 8) + ' reason=signal_burst');
+      return;
+    }
+    let data = null;
+    if (event.content) {
+      if (typeof event.content === 'string' && event.content.length > 524288) return;
+      try {
+        if (!App.SosCryptoSigner || typeof App.SosCryptoSigner.nip04Decrypt !== 'function') return;
+        const d = await Promise.resolve(App.SosCryptoSigner.nip04Decrypt(peer, event.content));
+        data = d ? JSON.parse(d) : null;
+      } catch (e) {
+        return;
+      }
+    }
+    if (type === 'dc-offer' || type === 'dc-answer') {
+      if (
+        !(
+          data &&
+          typeof data === 'object' &&
+          typeof data.type === 'string' &&
+          typeof data.sdp === 'string' &&
+          data.sdp.length > 0 &&
+          data.sdp.length <= 65536
+        )
+      ) {
+        return;
+      }
+    } else if (type === 'dc-candidates') {
+      if (!(Array.isArray(data) && data.length <= 256)) return;
+    } else if (type === 'dc-need-offer') {
+      // need-offer: תוכן אופציונלי; אין יצירת PC לפני throttle ב-nudgeInitiator | HYPER CORE TECH
+      if (data != null && (typeof data !== 'object' || Array.isArray(data))) return;
+    }
+    const s = ensPS(peer);
+    if (event.id && s.seen.has(event.id)) return;
+    if (event.id) {
+      s.seen.add(event.id);
+      if (s.seen.size > 200) {
+        const a = [...s.seen];
+        s.seen = new Set(a.slice(-100));
+      }
+    }
+    lastSigAt = Date.now();
+    { const e = ev(peer); e.lastPeerRxAt = Date.now(); e.peerSignalSeen = true; }
+    console.log(`[P2P-SIG] RX type=${type} peer=${peer.slice(0, 8)} transport=NOSTR`);
+    if (type === 'dc-need-offer') {
+      nudgeInitiator(peer);
+      return;
+    }
+    if (type === 'dc-offer' && data?.type && data?.sdp) await onOffer(peer, data);
+    else if (type === 'dc-answer' && data?.type && data?.sdp) await onAnswer(peer, data);
+    else if (type === 'dc-candidates' && Array.isArray(data)) await onCands(peer, data);
+  }
+
+  // חלק הודעות P2P (chat-p2p-datachannel.js) – קבלה ושליחה + keepalive ping/pong | HYPER CORE TECH
+  const CHAT_FILE_TYPES = ['file-complete-ack','file-resend-request','file-ready','file-offer','p2p-secure-file-offer','chunk-meta','chunk-ack','ack','file-resend-failed'];
+
+  function onMsg(peer,raw) {
+    ev(peer).lastPeerRxAt = Date.now();
+    try {
+      if (raw instanceof ArrayBuffer || (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(raw)) || (typeof Blob !== 'undefined' && raw instanceof Blob)) {
+        const s = getPS(peer.toLowerCase());
+        const payload = (raw instanceof ArrayBuffer || (typeof Blob !== 'undefined' && raw instanceof Blob)) ? raw : (raw.buffer || raw);
+        const receivingFile = typeof App.isReceivingChatFile === 'function' && App.isReceivingChatFile(peer);
+        if (receivingFile && typeof App.handleP2PFileMessage === 'function') {
+          try { App.handleP2PFileMessage(peer, payload, s && s.dc); } catch (e) { console.warn('[DC] file binary bridge:', e); }
+          return;
+        }
+        if (typeof App.handleFeedMediaBinary === 'function') {
+          try { if (App.handleFeedMediaBinary(peer, payload)) return; } catch (e) { console.warn('[DC] feed binary bridge:', e); }
+        }
+        if (typeof App.handleP2PFileMessage === 'function') {
+          try { App.handleP2PFileMessage(peer, payload, s && s.dc); } catch (e) { console.warn('[DC] file binary bridge:', e); }
+        }
+        return;
+      }
+      const m=JSON.parse(raw);
+      // חלק keepalive handler (chat-p2p-datachannel.js) – מגיב ל-ping ב-pong, מתעלם מ-pong | HYPER CORE TECH
+      if(m.type==='ping'){ const s=getPS(peer.toLowerCase()); if(s&&s.dc&&s.dc.readyState==='open'){try{s.dc.send(JSON.stringify({type:'pong',ts:Date.now()}));}catch{}} return; }
+      if(m.type==='pong') return;
+      if (m.type === 'p2p-secure-capability') {
+        if (App.P2pSecureV2 && typeof App.P2pSecureV2.handleCapabilityMessage === 'function') {
+          App.P2pSecureV2.handleCapabilityMessage(peer, m);
+        }
+        return;
+      }
+      if (m.type === 'p2p-secure-text') {
+        if (!App.P2pSecureV2 || typeof App.P2pSecureV2.decryptChatTextFromDc !== 'function') {
+          console.warn('[SECURITY/PARSE_REJECT] kind=dc type=p2p-secure-text reason=no_module');
+          return;
+        }
+        App.P2pSecureV2.decryptChatTextFromDc(peer, m).then((dec) => {
+          const content = typeof dec.content === 'string' ? dec.content : '';
+          let attachment = dec.attachment == null ? null : dec.attachment;
+          if (attachment != null && typeof App.inspectIncomingChatAttachment === 'function') {
+            const inspected = App.inspectIncomingChatAttachment(attachment, { network: true });
+            if (!inspected || inspected.ok !== true) {
+              console.warn('[SECURITY/PARSE_REJECT] kind=dc type=p2p-secure-text reason=bad_attachment');
+              return;
+            }
+          }
+          console.log(`[DC] 📩 P2P ← ${peer.slice(0,8)} secure`);
+          notifyIncomingMessage(peer, dec);
+          if (typeof App.appendChatMessage === 'function') {
+            App.appendChatMessage({
+              id: dec.id || ('p2p-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)),
+              from: peer,
+              to: App.publicKey,
+              content,
+              attachment,
+              createdAt: dec.createdAt || Math.floor(Date.now() / 1000),
+              direction: 'incoming',
+              p2p: true,
+              transport: 'DC',
+            });
+          }
+        }).catch((e) => {
+          console.warn('[SECURITY/PARSE_REJECT] kind=dc type=p2p-secure-text reason=' + (e && e.code ? e.code : 'decrypt_failed'));
+        });
+        return;
+      }
+      if(m.type==='chat_read_receipt'){
+        // Secure P2P v2: receipt identity = authenticated DC peer, not payload.from
+        if(typeof App.handleIncomingReadReceipt==='function'){
+          App.handleIncomingReadReceipt(m, { authenticatedPeerPubkey: peer, transport: 'p2p-dc' });
+        }
+        return;
+      }
+      if(m.type==='chat_presence'){
+        if(typeof App.applyIncomingChatPresence==='function'){
+          try{
+            m.from = m.from || peer;
+            App.applyIncomingChatPresence(m);
+          }catch(_){}
+        }
+        return;
+      }
+      if (m.type === 'request' || m.type === 'metadata' || m.type === 'complete' || m.type === 'error') {
+        if (typeof App.handleFeedMediaControlMessage === 'function') {
+          const s = getPS(peer.toLowerCase());
+          try { if (App.handleFeedMediaControlMessage(peer, m, s && s.dc)) return; } catch (e) { console.warn('[DC] feed control bridge:', e); }
+        }
+        if (m.type !== 'request') return;
+      }
+      if (m.type === 'peer-exchange-request' || m.type === 'peer-exchange-response' || m.type === 'relay-signal' || m.type === 'relay-signal-forward') {
+        if (App.PeerExchange && typeof App.PeerExchange.handleIncomingMessage === 'function') {
+          const s = getPS(peer.toLowerCase());
+          try { if (App.PeerExchange.handleIncomingMessage(m, peer, s && s.dc)) return; } catch (e) { console.warn('[DC] peer-exchange bridge:', e); }
+        }
+        return;
+      }
+      if (m.type === 'p2p-event-inv' || m.type === 'p2p-event-req' || m.type === 'p2p-event-res') {
+        if (App.EventSync && typeof App.EventSync.handleIncomingMessage === 'function') {
+          const s = getPS(peer.toLowerCase());
+          try { App.EventSync.handleIncomingMessage(m, peer, s && s.dc); } catch (e) { console.warn('[DC] event-sync bridge:', e); }
+        }
+        return;
+      }
+      if (m.type && CHAT_FILE_TYPES.indexOf(m.type) >= 0) {
+        if (typeof App.handleP2PFileMessage === 'function') {
+          const s = getPS(peer.toLowerCase());
+          try { App.handleP2PFileMessage(peer, raw, s && s.dc); } catch (e) { console.warn('[DC] file control bridge:', e); }
+        }
+        return;
+      }
+      if(m.type!=='chat-text') return;
+      try {
+        console.warn('[P2P-SECURE-V2] LEGACY_INBOUND_DTLS_ONLY peer=' + peer.slice(0, 8));
+      } catch (_legacyLog) {}
+      // Stage 14 — parity with relay chat parse bounds (wire format unchanged) | HYPER CORE TECH
+      if (m.id != null && (typeof m.id !== 'string' || m.id.length > DC_CHAT_ID_MAX)) {
+        console.warn('[SECURITY/PARSE_REJECT] kind=dc type=chat-text reason=bad_id');
+        return;
+      }
+      if (m.content != null && typeof m.content !== 'string') {
+        console.warn('[SECURITY/PARSE_REJECT] kind=dc type=chat-text reason=bad_content_type');
+        return;
+      }
+      const content = typeof m.content === 'string' ? m.content : '';
+      if (content.length > DC_CHAT_TEXT_MAX) {
+        console.warn('[SECURITY/PARSE_REJECT] kind=dc type=chat-text reason=oversized_text');
+        return;
+      }
+      let attachment = m.attachment == null ? null : m.attachment;
+      if (attachment != null) {
+        if (typeof App.inspectIncomingChatAttachment === 'function') {
+          const inspected = App.inspectIncomingChatAttachment(attachment, { network: true });
+          if (!inspected || inspected.ok !== true) {
+            console.warn(
+              '[SECURITY/PARSE_REJECT] kind=dc type=chat-text reason=bad_attachment' +
+                (inspected && inspected.reasonCode ? ' code=' + inspected.reasonCode : ''),
+            );
+            return;
+          }
+        } else if (typeof attachment !== 'object' || Array.isArray(attachment)) {
+          console.warn('[SECURITY/PARSE_REJECT] kind=dc type=chat-text reason=bad_attachment');
+          return;
+        }
+        if (typeof App.sanitizeIncomingChatFileName === 'function' && attachment && typeof attachment.name === 'string') {
+          attachment.name = App.sanitizeIncomingChatFileName(attachment.name);
+        }
+      }
+      console.log(`[DC] 📩 P2P ← ${peer.slice(0,8)}`);
+      notifyIncomingMessage(peer, m);
+      if(typeof App.appendChatMessage==='function') App.appendChatMessage({
+        id: m.id||('p2p-'+Date.now()+'-'+Math.random().toString(36).slice(2,6)),
+        from:peer, to:App.publicKey, content, attachment,
+        createdAt:m.createdAt||Math.floor(Date.now()/1000), direction:'incoming', p2p:true, transport:'DC'
+      });
+    } catch(e){ console.warn('[DC] parse:',e); }
+  }
+
+  function sendJson(peer,obj) {
+    const s=getPS(peer.toLowerCase());
+    if(!s||!s.dc||s.dc.readyState!=='open'||!obj) return false;
+    try {
+      s.dc.send(JSON.stringify(obj));
+      return true;
+    } catch(e) {
+      console.warn('[DC] sendJson:', e);
+      return false;
+    }
+  }
+
+  async function send(peer, msg) {
+    const s = getPS(peer.toLowerCase());
+    if (!s || !s.dc || s.dc.readyState !== 'open') return false;
+    if (!App.P2pSecureV2 || !App.P2pSecureV2.isLocalSecureP2pV2() || !App.P2pSecureV2.isPeerSecureP2pV2(peer)) {
+      return false;
+    }
+    try {
+      const wire = await App.P2pSecureV2.encryptChatTextForDc(peer, msg);
+      s.dc.send(JSON.stringify(wire));
+      console.log(`[DC] 📤 P2P → ${peer.slice(0, 8)} secure`);
+      return true;
+    } catch (e) {
+      console.warn('[DC] secure send failed:', e && e.message ? e.message : e);
+      return false;
+    }
+  }
+
+  // חלק reconnect (chat-p2p-datachannel.js) – חיבור מחדש אוטומטי | HYPER CORE TECH
+  function maybeReconn(k) {
+    k=k.toLowerCase(); const s=ensPS(k);
+    if(s.reconnT) return; if(s.reconnN>=MAX_RECONN) return;
+    { const t=trk(k); if(t&&t.failure&&t.failure.code==='NETWORK_ENVIRONMENT_BLOCKED'){ console.log(`[DC] skip reconn network-blocked peer=${k.slice(0,8)}`); return; } }
+    try {
+      if (typeof window.AndroidBridge !== 'undefined' &&
+          typeof window.AndroidBridge.isEmergencyMode === 'function' &&
+          window.AndroidBridge.isEmergencyMode() &&
+          typeof window.AndroidBridge.isEmergencyPeerReachable === 'function' &&
+          !window.AndroidBridge.isEmergencyPeerReachable(k)) {
+        console.log(`[DC] skip reconn mesh-route-gone peer=${k.slice(0,8)}`);
+        return;
+      }
+    } catch {}
+    const headless=!!window.__sosP2pHeadless;
+    const standbyPeers=Array.isArray(window.__sosP2pPeers)?window.__sosP2pPeers:[];
+    const inStandby=standbyPeers.some(p=>String(p||'').toLowerCase()===k);
+    const active=typeof App.getActiveChatPeer==='function'?App.getActiveChatPeer():null;
+    const hasMessages=typeof App.getChatMessages==='function'&&(App.getChatMessages(k)||[]).length>0;
+    if(headless){
+      if(!inStandby&&!hasMessages&&!(s&&s.init)) return;
+    } else {
+      if(!active&&!hasMessages) return;
+      if(active&&active.toLowerCase()!==k&&!hasMessages) return;
+    }
+    s.reconnT=setTimeout(()=>{ s.reconnT=null; s.reconnN++; s.status='idle'; connect(k); }, RECONN_MS*(s.reconnN+1));
+  }
+
+  // חלק subscription (chat-p2p-datachannel.js) – הרשמה ל-kind 25055 | HYPER CORE TECH
+  function closeSub(sub){ if(!sub)return; try{sub.close();}catch{} try{sub.unsub();}catch{} }
+
+  function subscribe() {
+    if(sigSub||!App.pool||!App.publicKey||App.guestMode) return;
+    try {
+      // חלק subscribe (chat-p2p-datachannel.js) – מאזין לכל kind 25055 ומסנן ידנית לפי תג p כדי למנוע פספוס בריליי | HYPER CORE TECH
+      sigSub=App.pool.subscribeMany(App.relayUrls,[{kinds:[SIG_KIND],since:Math.floor(Date.now()/1000)-SIG_SINCE_SEC}],{
+        onevent:handleSig, oneose:()=>{lastSigAt=Date.now();subReady=true;console.log('[DC] ✅ sub ready');}
+      }); lastSigAt=Date.now();
+    } catch(e){ console.warn('[DC] sub fail:',e); }
+  }
+
+  function startKeep() {
+    if(keepTimer) return;
+    const isNativeShell=()=>{
+      try{
+        if(window.SOS_NATIVE_SHELL===true) return true;
+        if(document.documentElement?.getAttribute('data-sos-native')==='1') return true;
+        const b=window.SosNativeShell;
+        if(b&&typeof b.isNativeShell==='function'){
+          const v=b.isNativeShell();
+          return v===true||v==='true';
+        }
+      }catch{}
+      return false;
+    };
+    keepTimer=setInterval(()=>{
+      if(App.guestMode||!App.pool||!App.publicKey) return;
+      // ב-APK ממשיכים keepalive גם כשהמסך כבוי / המשימה ברקע | HYPER CORE TECH
+      if(document.hidden && !isNativeShell()) return;
+      if(!sigSub){subscribe();return;}
+      if(lastSigAt&&(Date.now()-lastSigAt)>120000){closeSub(sigSub);sigSub=null;subReady=false;subscribe();}
+    },30000);
+    try{
+      document.addEventListener('visibilitychange',()=>{
+        if(!document.hidden&&!sigSub) subscribe();
+        if(isNativeShell()&&!sigSub) subscribe();
+      });
+      window.addEventListener('sos-native-p2p-warm', (ev)=>{
+        try{
+          const peer=ev?.detail?.peer||'';
+          resumeStandby(peer);
+        }catch{}
+      });
+      window.addEventListener('sos-native-resume', ()=>{
+        try{ if(isNativeShell()) resumeStandby(''); }catch{}
+      });
+    }catch{}
+  }
+
+  /** חידוש subscription + חיבור ל-peer אחרי חימום Native / headless | HYPER CORE TECH */
+  function resumeStandby(peer){
+    try{
+      init();
+      if(!sigSub) subscribe();
+      const list=[];
+      const k=String(peer||'').trim().toLowerCase();
+      if(isValidPeerKey(k)) list.push(k);
+      (Array.isArray(window.__sosP2pPeers)?window.__sosP2pPeers:[]).forEach((p)=>{
+        const pk=String(p||'').trim().toLowerCase();
+        if(isValidPeerKey(pk)&&!list.includes(pk)) list.push(pk);
+      });
+      peers.forEach((s,pk)=>{
+        if(!s) return;
+        if(s.init||s.status==='connected'||s.status==='connecting'||s.status==='waiting'||s.status==='closed'){
+          if(!list.includes(pk)) list.push(pk);
+        }
+      });
+      list.forEach((pk)=>{
+        try{
+          const s=ensPS(pk);
+          if(s.status==='connected'&&s.dc&&s.dc.readyState==='open') return;
+          if(s.status==='connecting') return;
+          const nowMs=Date.now();
+          if(nowMs-(s.lastCounterResetAt||0)<COUNTER_RESET_MIN_MS) return;
+          s.lastCounterResetAt=nowMs;
+          s.offerRetryN=0;
+          s.reconnN=0;
+          // headless: initiator שולח offer; responder ממתין – אם כבר היינו initiator נשלח שוב | HYPER CORE TECH
+          if(amInitiator(pk)){
+            s.status='idle';
+            enqueueConnect(pk, true);
+          } else {
+            s.status='waiting';
+            s.init=true;
+            requestOfferFromInitiator(pk);
+          }
+        }catch{}
+      });
+      console.log('[DC] resumeStandby peers=', list.length, 'headless=', !!window.__sosP2pHeadless);
+    }catch(e){
+      console.warn('[DC] resumeStandby failed:', e);
+    }
+  }
+
+  // חלק API (chat-p2p-datachannel.js) – ממשק ציבורי | HYPER CORE TECH
+  function isConn(p){ const s=getPS(p.toLowerCase()); return !!(s&&s.dc&&s.dc.readyState==='open'); }
+  function status(p){ const s=getPS(p.toLowerCase()); return s?s.status:'idle'; }
+
+  let initDone=false;
+  function init(){
+    if(initDone||App.guestMode||!App.publicKey) return;
+    try {
+      const cold = window.SosCallColdBoot;
+      if (cold && typeof cold.markEntry === 'function' && !cold.markEntry('p2p-dc')) return;
+    } catch (_) {}
+    initDone=true;
+    if(App.pool) subscribe();
+    startKeep();
+    hookMeshReceiver();
+    notifyWebViewP2pReady();
+    console.log('[DC] ✅ initialized');
+  }
+
+  let lazyDone=false;
+  function lazyInit(){
+    if(lazyDone) return;
+    try {
+      const cold = window.SosCallColdBoot;
+      if (cold && typeof cold.shouldDefer === 'function' && cold.shouldDefer('p2p-dc')) {
+        if (typeof cold.defer === 'function') {
+          cold.defer('p2p-dc', () => { lazyDone=false; lazyInit(); });
+        }
+        return;
+      }
+    } catch (_) {}
+    lazyDone=true;
+    if(App.publicKey&&!App.guestMode){ init(); }
+    else { const c=setInterval(()=>{ if(App.publicKey&&!App.guestMode){clearInterval(c);init();} },2000); }
+  }
+
+  // חלק getChatPC (chat-p2p-datachannel.js) – חשיפת PeerConnection לשימוש מערכת הקבצים | HYPER CORE TECH
+  function getChatPC(peer) { const s=getPS(peer.toLowerCase()); return (s&&s.pc&&s.status==='connected')?s.pc:null; }
+  function getChatDC(peer) {
+    if (!peer) return null;
+    const s = getPS(String(peer).toLowerCase());
+    return (s && s.dc && s.dc.readyState === 'open') ? s.dc : null;
+  }
+
+  // חלק forceConnect (chat-p2p-datachannel.js) – לא שובר initiator/responder; מגיב רק מבקש offer | HYPER CORE TECH
+  async function forceConnect(peer) {
+    await connect(peer);
+  }
+
+  // חלק בריאות ערוץ (chat-p2p-datachannel.js) – DC open לבד לא מספיק אם ICE מת (stale) | HYPER CORE TECH
+  function isHealthy(peer) {
+    if (!peer) return false;
+    const s = getPS(String(peer).toLowerCase());
+    if (!s || !s.dc || s.dc.readyState !== 'open') return false;
+    const ice = s.pc ? s.pc.iceConnectionState : '';
+    return ice !== 'disconnected' && ice !== 'failed' && ice !== 'closed';
+  }
+
+  function getDiagnostics(peer) {
+    const k = String(peer || '').toLowerCase();
+    const t = trk(k);
+    const s = getPS(k);
+    const snap = t ? t.snapshot() : { state: 'IDLE', failure: null, negotiationStarted: false };
+    snap.dcReadyState = s && s.dc ? s.dc.readyState : 'none';
+    snap.healthy = isHealthy(k);
+    return snap;
+  }
+
+  const CONNECTING_STATES = new Set(['SIGNALING', 'OFFER_SENT', 'ANSWER_WAIT', 'ICE_CONNECTING', 'DC_CONNECTING']);
+
+  // חלק waitForOpen (chat-p2p-datachannel.js) – המתנה לפי שלב: ממשיכים כל עוד יש התקדמות, נכשלים בקוד מדויק | HYPER CORE TECH
+  async function waitForOpen(peer, opts) {
+    const k = String(peer || '').toLowerCase();
+    const C = App.P2pConn;
+    const o = opts || {};
+    const startedAt = Date.now();
+    if (isHealthy(k)) return { ok: true, reused: true, state: 'DC_OPEN', waitedMs: 0 };
+    if (!isValidPeerKey(k) || !C) return { ok: false, failure: 'UNKNOWN_P2P_FAILURE', negotiationStarted: false, waitedMs: 0 };
+    const pollMs = o.pollMs || 100;
+    const capMs = o.maxTotalMs || (C.deadline('ANSWER_WAIT', 'hard') + C.deadline('ICE_CONNECT', 'hard') + C.deadline('DC_OPEN', 'hard'));
+    let softActed = false;
+    const t = trk(k);
+    while (true) {
+      if (isHealthy(k)) return { ok: true, reused: false, state: 'DC_OPEN', waitedMs: Date.now() - startedAt };
+      const waited = Date.now() - startedAt;
+      if (t.failure && t.failure.at >= startedAt) {
+        return { ok: false, failure: t.failure.code, negotiationStarted: t.failure.negotiationStarted, phase: t.failure.phase, waitedMs: waited };
+      }
+      const e = t.evidence;
+      if (!e.negotiationStarted) {
+        if (e.publishOk === false) {
+          const code = t.failure ? t.failure.code : t.fail(C.classifyPublishFailure(e.publishReasons));
+          return { ok: false, failure: code, negotiationStarted: false, phase: 'SIGNALING', waitedMs: waited };
+        }
+        if (!softActed && e.publishOk === true && waited >= C.deadline('ANSWER_WAIT', 'soft')) {
+          softActed = true;
+          const off = C.decidePeerOffline(Object.assign(failureEvidence(k), { answerDeadlineExpired: true }));
+          if (off.decision === 'OFFLINE_LIKELY' && o.allowEarlyOffline !== false) {
+            const code = t.fail('PEER_OFFLINE', { detail: 'soft_offline' });
+            return { ok: false, failure: code, negotiationStarted: false, phase: 'ANSWER_WAIT', waitedMs: waited };
+          }
+          if (!amInitiator(k)) { try { await requestOfferFromInitiator(k); } catch (_) {} }
+        }
+        if (waited >= C.deadline('ANSWER_WAIT', 'hard')) {
+          const code = failPeer(k, null, 'answer_deadline');
+          return { ok: false, failure: code, negotiationStarted: false, phase: 'ANSWER_WAIT', waitedMs: waited };
+        }
+      } else if (!CONNECTING_STATES.has(t.state) && t.state !== 'DC_OPEN') {
+        const code = t.failure ? t.failure.code : failPeer(k, null, 'not_connecting');
+        return { ok: false, failure: code, negotiationStarted: true, phase: t.state, waitedMs: waited };
+      }
+      if (waited >= capMs) {
+        const code = failPeer(k, { phaseExpired: t.state === 'ICE_CONNECTING' ? 'ICE_CONNECT' : undefined }, 'wait_cap');
+        return { ok: false, failure: code, negotiationStarted: !!e.negotiationStarted, phase: t.state, waitedMs: waited };
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+  }
+
+  async function ingestLocalSignal(fromIp, signal, fromPubkey) {
+    try {
+      let sig = typeof signal === 'string' ? JSON.parse(signal) : signal;
+      if (!sig) return;
+      const peer = String(fromPubkey || sig.fromPubkey || '').toLowerCase();
+      if (!isValidPeerKey(peer)) return;
+      if (sig.type === 'p2p-secure-mesh-signal') {
+        if (!App.P2pSecureV2 || typeof App.P2pSecureV2.decryptMeshSignal !== 'function') {
+          console.warn('[SECURITY/PARSE_REJECT] kind=mesh type=p2p-secure-mesh-signal reason=no_module');
+          return;
+        }
+        sig = await App.P2pSecureV2.decryptMeshSignal(peer, sig);
+      }
+      const type = String(sig.type || '');
+      if (!type.startsWith('dc-')) return;
+      const data = sig.data !== undefined ? sig.data : (sig.payload !== undefined ? sig.payload : null);
+      ensPS(peer).sigTransport = 'MESH';
+      { const e = ev(peer); e.lastPeerRxAt = Date.now(); e.peerSignalSeen = true; }
+      console.log(`[P2P-SIG] RX type=${type} peer=${peer.slice(0,8)} transport=MESH`);
+      if (type === 'dc-need-offer') nudgeInitiator(peer);
+      else if (type === 'dc-offer' && data && data.type && data.sdp) onOffer(peer, data);
+      else if (type === 'dc-answer' && data && data.type && data.sdp) onAnswer(peer, data);
+      else if (type === 'dc-candidates' && Array.isArray(data)) onCands(peer, data);
+    } catch (e) {
+      console.warn('[DC] mesh sig:', e && e.code ? e.code : e);
+    }
+  }
+
+  function hookMeshReceiver() {
+    window.SOSBridge = window.SOSBridge || {};
+    const prev = window.SOSBridge.onWebRTCSignal;
+    if (prev && prev.__sosDcHook) return;
+    const next = function(fromIp, signal, fromPubkey) {
+      ingestLocalSignal(fromIp, signal, fromPubkey);
+      if (typeof prev === 'function') {
+        try { prev(fromIp, signal, fromPubkey); } catch (_) {}
+      }
+    };
+    next.__sosDcHook = true;
+    window.SOSBridge.onWebRTCSignal = next;
+  }
+
+  App.dataChannel={ connect, forceConnect, send, sendJson, isConnected:isConn, isHealthy, getDiagnostics, waitForOpen, getStatus:status, init:lazyInit, resumeStandby, getChatPC, getChatDC, subscribeIncomingMessages, ingestSignal: ingestLocalSignal, amInitiator, _peers:peers, verifyIncomingRelayEvent: verifyIncomingP2pRelayEvent };
+  hookMeshReceiver();
+
+  // חלק lazy trigger (chat-p2p-datachannel.js) – אתחול כשפותחים צ'אט / headless | HYPER CORE TECH
+  function setupLazy(){
+    const btn=document.getElementById('chatToggle')||document.querySelector('[data-chat-toggle]');
+    if(btn) btn.addEventListener('click',lazyInit,{once:true});
+    if(App.pool&&App.publicKey&&!App.guestMode) setTimeout(lazyInit,15000);
+    // headless ב-APK – אתחול מהיר בלי UI | HYPER CORE TECH
+    if(window.__sosP2pHeadless||document.documentElement?.getAttribute('data-sos-p2p-headless')==='1'){
+      setTimeout(lazyInit,1200);
+      setTimeout(()=>{ try{ resumeStandby(''); }catch{} },2500);
+    }
+  }
+  try{ if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',setupLazy); else setupLazy(); }catch{}
+  console.log('[DC] module loaded (lazy)');
+})(window);

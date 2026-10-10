@@ -1,0 +1,7685 @@
+(function initChatUI(window) {
+  const App = window.NostrApp || (window.NostrApp = {});
+  const doc = window.document;
+  // חלק דיבאג מדיה (chat-ui.js) – לוגים לפי localStorage sos_debug_media | HYPER CORE TECH
+  if (typeof App.mediaDebugLog !== 'function') {
+    App.mediaDebugLog = (...args) => {
+      try {
+        if (localStorage.getItem('sos_debug_media') === '1') {
+          const safe = args.map((a) => (typeof App.diagRedactForLog === 'function' ? App.diagRedactForLog(a) : a));
+          console.log('[MEDIA-DEBUG]', ...safe);
+        }
+      } catch (_) {}
+    };
+  }
+  const mediaDebugLog = App.mediaDebugLog;
+  // חלק אימות גרסה (chat-ui.js) – לוג לוידוא שהקוד החדש נטען | HYPER CORE TECH
+  console.log('%c[CHAT-UI] VERSION: WA-FILE-STABLE-v2 (2026-07-30)', 'color: lime; font-size: 14px; font-weight: bold;');
+  try { console.log('[CHAT/PERSIST] MODULE chat-ui.js v=20260905p1'); } catch (_) {}
+  // חלק צ'אט (chat-ui.js) – צליל והתרעות להודעות נכנסות | HYPER CORE TECH
+  const CHAT_MESSAGE_SOUND_URL = 'https://npub1jqzsts0fz6ufkgxdhna99rqwnn0ptrg9tvmy62m7ytffy4w0ncnsm7rac0.blossom.band/f0a73d1b6550d6a140a63fa91ec906f89dcbc2fdece317dbaa81e5093a319629.mp3';
+  let chatMessageAudio = null;
+  let chatNotificationPermissionLastRequestedAt = 0;
+
+  // חלק צ'אט (chat-ui.js) – מוודא שקיימת סביבת צ'אט
+  if (!App.chatState) {
+    console.warn('Chat state not initialized – chat UI skipped');
+    return;
+  }
+
+  function escapeHtmlAttr(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+  /** אותה גישה כמו בועות/שיחה – בלי לחתוך data:image מהמטמון | HYPER CORE TECH */
+  function safeConversationAvatarSrc(url) {
+    if (!url || typeof url !== 'string') return '';
+    const u = url.trim();
+    if (!u || /^javascript:/i.test(u) || /^vbscript:/i.test(u) || /^data:text\/html/i.test(u)) return '';
+    // cacheAvatar שומר data:image מלא (עשרות KB) – חיתוך ל-2048 שובר את התמונה | HYPER CORE TECH
+    if (/^data:image\//i.test(u)) return u;
+    if (/^blob:/i.test(u)) return u;
+    return u.slice(0, 4096);
+  }
+
+  function setConversationAvatarElement(pictureUrl, name, initials) {
+    if (!elements.conversationAvatar) return;
+    const safeInitials = String(initials || 'מש').replace(/[<>]/g, '');
+    elements.conversationAvatar.innerHTML = '';
+    elements.conversationAvatar.textContent = '';
+    const pic = safeConversationAvatarSrc(pictureUrl);
+    if (!pic) {
+      elements.conversationAvatar.textContent = safeInitials;
+      return;
+    }
+    // כמו contact list / audio avatar – src מלא + no-referrer | HYPER CORE TECH
+    const img = doc.createElement('img');
+    img.alt = name || 'משתמש';
+    img.decoding = 'async';
+    img.loading = 'eager';
+    img.referrerPolicy = 'no-referrer';
+    img.src = pic;
+    img.addEventListener('error', () => {
+      if (!elements.conversationAvatar) return;
+      // אם data URL נכשל – נסה URL מקורי מהפרופיל אם שונה | HYPER CORE TECH
+      elements.conversationAvatar.textContent = safeInitials;
+    }, { once: true });
+    elements.conversationAvatar.appendChild(img);
+  }
+
+  function updateActiveConversationHeader(peerPubkey) {
+    const peer = String(peerPubkey || state.activeContact || '').toLowerCase();
+    if (!peer || peer !== String(state.activeContact || '').toLowerCase()) return;
+    const contact = App.chatState?.contacts?.get?.(peer) || null;
+    const rawName = contact?.name || `משתמש ${peer.slice(0, 8)}`;
+    // תצוגה בלבד – שמות ארוכים לא דוחפים את כפתורי השיחה | HYPER CORE TECH
+    const name = rawName.length > 15 ? rawName.slice(0, 15) : rawName;
+    const initials = contact?.initials || (typeof App.getInitials === 'function' ? App.getInitials(rawName) : 'מש');
+    if (elements.conversationName) {
+      elements.conversationName.textContent = name;
+      try { elements.conversationName.title = rawName; } catch (_) {}
+    }
+    const picture =
+      contact?.picture ||
+      contact?.image ||
+      contact?.avatar ||
+      '';
+    setConversationAvatarElement(picture, name, initials);
+  }
+
+  // חלק אייקון קובץ (chat-ui.js) – אייקון לפי סיומת בסגנון בועת העברה | HYPER CORE TECH
+  function getTransferFileIcon(fileName) {
+    const fileExt = String(fileName || '').split('.').pop()?.toLowerCase() || '';
+    if (['mp4', 'webm', 'avi', 'mov', 'mkv'].includes(fileExt)) return 'fa-file-video';
+    if (['mp3', 'm4a', 'wav', 'ogg', 'flac'].includes(fileExt)) return 'fa-file-audio';
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(fileExt)) return 'fa-file-image';
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(fileExt)) return 'fa-file-zipper';
+    if (fileExt === 'pdf') return 'fa-file-pdf';
+    if (['doc', 'docx'].includes(fileExt)) return 'fa-file-word';
+    if (['xls', 'xlsx'].includes(fileExt)) return 'fa-file-excel';
+    return 'fa-file';
+  }
+
+  function formatTransferSize(bytes) {
+    if (!bytes || bytes <= 0) return '';
+    if (typeof App.formatFileSize === 'function') return App.formatFileSize(bytes);
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function buildFileNameLabelHtml(name, { className = 'chat-file-bubble__name', tag = 'div' } = {}) {
+    if (typeof App.buildChatFileNameHtml === 'function') {
+      return App.buildChatFileNameHtml(name, { className, tag });
+    }
+    const full = String(name || 'קובץ');
+    const safe = App.escapeHtml ? App.escapeHtml(full) : full;
+    return `<${tag} class="${className}" title="${safe}" data-full-name="${safe}">${safe}</${tag}>`;
+  }
+
+  function readFileNameFromBubbleEl(el) {
+    if (typeof App.readChatFileDisplayName === 'function') {
+      return App.readChatFileDisplayName(el);
+    }
+    if (!el) return '';
+    return String(el.getAttribute('data-full-name') || el.getAttribute('title') || el.textContent || '').trim();
+  }
+
+  // חלק פעולות צד (chat-ui.js) – פח + הורדה בעמודה ליד המדיה (שולח); הורדה במקום הפח (מקבל) | HYPER CORE TECH
+  function buildChatMediaSideDownloadHtml(attachment, fallbackUrl, fallbackName) {
+    const sideClass = 'chat-message__action-btn chat-message__action-btn--download chat-message__media-download chat-message__media-download--side';
+    if (attachment && typeof App.buildAttachmentDownloadHtml === 'function') {
+      const html = App.buildAttachmentDownloadHtml(attachment, sideClass);
+      if (html && !html.includes('torrent-bubble__download-btn')) return html;
+    }
+    const src = String(fallbackUrl || attachment?.url || attachment?.dataUrl || '').trim();
+    if (!src || src.startsWith('magnet:')) return '';
+    if (typeof App.buildMediaDownloadButton === 'function') {
+      return App.buildMediaDownloadButton(src, fallbackName || attachment?.name || 'sos-file', sideClass);
+    }
+    const safeSrc = src.replace(/'/g, "\\'");
+    const safeName = String(fallbackName || attachment?.name || 'sos-file').replace(/'/g, "\\'");
+    return `<button type="button" class="${sideClass}" title="הורד" aria-label="הורד" data-filename="${safeName}" data-download-url="${safeSrc}" data-file-id="${String(attachment?.fileId || '').replace(/"/g, '')}" onclick="event.preventDefault();event.stopPropagation();if(window.NostrApp&&typeof NostrApp.downloadChatMediaFromButton==='function')NostrApp.downloadChatMediaFromButton(this);else if(window.NostrApp&&typeof NostrApp.downloadChatMedia==='function')NostrApp.downloadChatMedia('${safeSrc}','${safeName}');"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+  }
+
+  function buildChatFileSideDownloadHtml({ attachment, magnetURI, blobUrl, fileName } = {}) {
+    const name = fileName || attachment?.name || 'קובץ';
+    const magnet = String(magnetURI || attachment?.magnetURI || '').trim();
+    const url =
+      String(blobUrl || attachment?.url || attachment?.dataUrl || '').trim() ||
+      (magnet && typeof App.getTorrentBlob === 'function' ? App.getTorrentBlob(magnet)?.url || '' : '');
+    if (url && !url.startsWith('magnet:')) {
+      return buildChatMediaSideDownloadHtml(attachment, url, name);
+    }
+    if (!magnet) return '';
+    const safeMagnet = App.escapeHtml ? App.escapeHtml(magnet) : magnet.replace(/"/g, '&quot;');
+    const safeName = App.escapeHtml ? App.escapeHtml(name) : String(name).replace(/"/g, '&quot;');
+    return `<button type="button" class="chat-message__action-btn chat-message__action-btn--download chat-message__media-download chat-message__media-download--side torrent-bubble__download-btn" data-magnet="${safeMagnet}" data-filename="${safeName}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+  }
+
+  function buildChatDeleteHtml(messageId) {
+    if (!messageId) return '';
+    return `<button type="button" class="chat-message__action-btn chat-message__action-btn--danger chat-message__delete" data-chat-delete="${messageId}" title="מחק" aria-label="מחק הודעה"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>`;
+  }
+
+  function buildChatLinkCopyHtml(url) {
+    const href = String(url || '').trim();
+    if (!/^https?:\/\//i.test(href)) return '';
+    const safeUrl = App.escapeHtml ? App.escapeHtml(href) : href.replace(/"/g, '&quot;');
+    return `<button type="button" class="chat-message__action-btn chat-message__copy-link" data-chat-copy-url="${safeUrl}" title="העתק קישור" aria-label="העתק קישור"><i class="fa-solid fa-link" aria-hidden="true"></i></button>`;
+  }
+
+  function buildChatMoreMenuHtml({ aboveHtml = '', belowHtml = '' } = {}) {
+    const above = String(aboveHtml || '').trim();
+    const below = String(belowHtml || '').trim();
+    if (!above && !below) return '';
+    return `
+      <div class="chat-message__more-wrap">
+        <div class="chat-message__more-menu chat-message__more-menu--above" hidden role="menu" data-more-slot="above">
+          ${above}
+        </div>
+        <button type="button" class="chat-message__more" data-chat-more="1" aria-label="פעולות הודעה" aria-expanded="false" title="פעולות">
+          <i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>
+        </button>
+        <div class="chat-message__more-menu chat-message__more-menu--below" hidden role="menu" data-more-slot="below">
+          ${below}
+        </div>
+      </div>
+    `;
+  }
+
+  function getChatMessagesScroller() {
+    return (
+      elements.messagesContainer ||
+      doc.getElementById('chatMessages') ||
+      doc.querySelector('.chat-conversation__messages') ||
+      null
+    );
+  }
+
+  // חלק גלילה (chat-ui.js) – הדבקה לתחתית כמו וואטסאפ בזמן חשיפת מדיה | HYPER CORE TECH
+  const CHAT_STICK_BOTTOM_PX = 120;
+  let chatStickToBottom = true;
+  let chatStickRaf = 0;
+  let chatStickFollowRaf = 0;
+
+  function getChatDistanceFromBottom(scroller) {
+    const el = scroller || getChatMessagesScroller();
+    if (!el) return Number.POSITIVE_INFINITY;
+    return el.scrollHeight - el.scrollTop - el.clientHeight;
+  }
+
+  function isChatPinnedToBottom(scroller) {
+    return getChatDistanceFromBottom(scroller) <= CHAT_STICK_BOTTOM_PX;
+  }
+
+  function setChatStickToBottom(pinned) {
+    chatStickToBottom = !!pinned;
+  }
+
+  function scrollChatToBottom({ force = false } = {}) {
+    const el = getChatMessagesScroller();
+    if (!el) return;
+    if (!force && !chatStickToBottom) return;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function scheduleStickChatToBottom(opts = {}) {
+    if (!opts.force && !chatStickToBottom) return;
+    if (chatStickRaf) cancelAnimationFrame(chatStickRaf);
+    chatStickRaf = requestAnimationFrame(() => {
+      chatStickRaf = 0;
+      scrollChatToBottom({ force: true });
+      requestAnimationFrame(() => scrollChatToBottom({ force: true }));
+    });
+  }
+
+  function stickChatToBottomIfPinned(opts = {}) {
+    if (opts.force) setChatStickToBottom(true);
+    if (!chatStickToBottom && !opts.force) return;
+    scheduleStickChatToBottom({ force: true });
+  }
+
+  function onChatMessagesScroll() {
+    const el = getChatMessagesScroller();
+    if (!el) return;
+    chatStickToBottom = isChatPinnedToBottom(el);
+  }
+
+  function ensureChatStickScrollWiring() {
+    const el = getChatMessagesScroller();
+    if (!el || el.dataset.stickScrollBound === '1') return;
+    el.dataset.stickScrollBound = '1';
+    el.addEventListener('scroll', onChatMessagesScroll, { passive: true });
+    if (typeof MutationObserver === 'function') {
+      const observer = new MutationObserver(() => {
+        if (!chatStickToBottom) return;
+        if (chatStickFollowRaf) return;
+        chatStickFollowRaf = requestAnimationFrame(() => {
+          chatStickFollowRaf = 0;
+          scheduleStickChatToBottom({ force: true });
+        });
+      });
+      observer.observe(el, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['hidden', 'class', 'style'],
+      });
+    }
+  }
+
+  function clearChatMessageMoreOpenLayout(msg) {
+    if (!msg) return;
+    const scroller = getChatMessagesScroller();
+    const hadPad = msg.classList.contains('chat-message--more-open');
+    if (hadPad && scroller) {
+      // מסירים מרווח בלי לקפוץ את ההודעה על המסך | HYPER CORE TECH
+      const beforeTop = msg.getBoundingClientRect().top;
+      msg.style.marginTop = '';
+      msg.style.marginBottom = '';
+      const afterTop = msg.getBoundingClientRect().top;
+      scroller.scrollTop += afterTop - beforeTop;
+    } else {
+      msg.style.marginTop = '';
+      msg.style.marginBottom = '';
+    }
+    msg.classList.remove('chat-message--more-open');
+    delete msg.dataset.morePadAbove;
+    delete msg.dataset.morePadBelow;
+    const content = msg.querySelector('.chat-message__content');
+    if (content) content.style.marginTop = '';
+  }
+
+  function closeAllChatMessageMenus(exceptWrap) {
+    doc.querySelectorAll('.chat-message__more-wrap.is-open').forEach((wrap) => {
+      if (exceptWrap && wrap === exceptWrap) return;
+      wrap.classList.remove('is-open');
+      const btn = wrap.querySelector('[data-chat-more]');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+      wrap.querySelectorAll('.chat-message__more-menu').forEach((menu) => {
+        menu.hidden = true;
+      });
+      clearChatMessageMoreOpenLayout(wrap.closest('.chat-message'));
+    });
+  }
+
+  function setChatMoreMenusOpen(wrap, open) {
+    if (!wrap) return;
+    const msg = wrap.closest('.chat-message');
+    wrap.classList.toggle('is-open', open);
+    const btn = wrap.querySelector('[data-chat-more]');
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    wrap.querySelectorAll('.chat-message__more-menu').forEach((menu) => {
+      const hasItems = !!menu.querySelector('button, a');
+      menu.hidden = !(open && hasItems);
+    });
+
+    if (open && msg) {
+      // אייקונים absolute; מרווח דוחף שכנים; גלילה מפצה כדי שההודעה+⋮ יישארו במקום על המסך | HYPER CORE TECH
+      msg.classList.add('chat-message--more-open');
+      requestAnimationFrame(() => {
+        const scroller = getChatMessagesScroller();
+        const above = wrap.querySelector('.chat-message__more-menu--above');
+        const below = wrap.querySelector('.chat-message__more-menu--below');
+        const gap = 8;
+        const aboveH =
+          above && !above.hidden && above.querySelector('button, a')
+            ? Math.ceil(above.getBoundingClientRect().height) + gap
+            : 0;
+        const belowH =
+          below && !below.hidden && below.querySelector('button, a')
+            ? Math.ceil(below.getBoundingClientRect().height) + gap
+            : 0;
+
+        const anchorTop = msg.getBoundingClientRect().top;
+        msg.dataset.morePadAbove = String(aboveH);
+        msg.dataset.morePadBelow = String(belowH);
+        msg.style.marginTop = aboveH ? `${aboveH}px` : '';
+        msg.style.marginBottom = belowH ? `${belowH}px` : '';
+
+        if (scroller) {
+          const newTop = msg.getBoundingClientRect().top;
+          scroller.scrollTop += newTop - anchorTop;
+        }
+      });
+    } else {
+      clearChatMessageMoreOpenLayout(msg);
+    }
+  }
+
+  function buildChatSideActionsHtml({ isOutgoing, messageId, downloadHtml, copyHtml }) {
+    const deleteHtml = isOutgoing && messageId ? buildChatDeleteHtml(messageId) : '';
+    const copy = copyHtml || '';
+    const download = downloadHtml || '';
+    // שני כפתורים: אחד מעל ⋮ (העתק/מחק) ואחד מתחת (הורדה) — כמו ZIP | HYPER CORE TECH
+    let aboveHtml = `${copy}${deleteHtml}`;
+    let belowHtml = download;
+    // אם אין הורדה אבל יש שני פריטים למעלה — מפצלים: ראשון מעל, שני מתחת | HYPER CORE TECH
+    if (!belowHtml && copy && deleteHtml) {
+      aboveHtml = copy;
+      belowHtml = deleteHtml;
+    }
+    const menuHtml = buildChatMoreMenuHtml({
+      aboveHtml,
+      belowHtml,
+    });
+    if (!menuHtml) return '';
+    return `<div class="chat-message__side-actions">${menuHtml}</div>`;
+  }
+
+  function ensureChatSideActions(bubble, { isOutgoing, messageId, downloadHtml, copyHtml }) {
+    if (!bubble) return null;
+    let side = bubble.querySelector('.chat-message__side-actions');
+    const content = bubble.querySelector('.chat-message__content');
+    if (!side) {
+      side = doc.createElement('div');
+      side.className = 'chat-message__side-actions';
+      if (content) {
+        if (isOutgoing) bubble.insertBefore(side, content);
+        else content.insertAdjacentElement('afterend', side);
+      } else {
+        bubble.appendChild(side);
+      }
+    } else if (content) {
+      if (isOutgoing && side.nextElementSibling !== content) {
+        bubble.insertBefore(side, content);
+      } else if (!isOutgoing && content.nextElementSibling !== side) {
+        content.insertAdjacentElement('afterend', side);
+      }
+    }
+
+    let moreWrap = side.querySelector('.chat-message__more-wrap');
+    let menuAbove = moreWrap?.querySelector('.chat-message__more-menu--above') || null;
+    let menuBelow = moreWrap?.querySelector('.chat-message__more-menu--below') || null;
+    const deleteHtml = isOutgoing && messageId ? buildChatDeleteHtml(messageId) : '';
+    const copy = copyHtml || '';
+    const download = downloadHtml || '';
+    let aboveHtml = `${copy}${deleteHtml}`;
+    let belowHtml = download;
+    if (!belowHtml && copy && deleteHtml) {
+      aboveHtml = copy;
+      belowHtml = deleteHtml;
+    }
+    const needMenu = !!(aboveHtml.trim() || belowHtml.trim());
+    if (needMenu && !moreWrap) {
+      const initialMenu = buildChatMoreMenuHtml({
+        aboveHtml,
+        belowHtml,
+      });
+      if (initialMenu) side.insertAdjacentHTML('afterbegin', initialMenu);
+      moreWrap = side.querySelector('.chat-message__more-wrap');
+      menuAbove = moreWrap?.querySelector('.chat-message__more-menu--above') || null;
+      menuBelow = moreWrap?.querySelector('.chat-message__more-menu--below') || null;
+    }
+    // תפריט ישן בלי above/below — משדרגים | HYPER CORE TECH
+    if (moreWrap && (!menuAbove || !menuBelow)) {
+      const legacy = moreWrap.querySelector('.chat-message__more-menu:not([data-more-slot])');
+      const legacyItems = legacy ? legacy.innerHTML : '';
+      moreWrap.outerHTML = buildChatMoreMenuHtml({
+        aboveHtml: aboveHtml.trim() || legacyItems,
+        belowHtml,
+      });
+      moreWrap = side.querySelector('.chat-message__more-wrap');
+      menuAbove = moreWrap?.querySelector('.chat-message__more-menu--above') || null;
+      menuBelow = moreWrap?.querySelector('.chat-message__more-menu--below') || null;
+    }
+    if (menuAbove) {
+      if (copy && !menuAbove.querySelector('.chat-message__copy-link') && aboveHtml.includes('copy-link')) {
+        menuAbove.insertAdjacentHTML('afterbegin', copy);
+      }
+      if (deleteHtml && !menuAbove.querySelector('.chat-message__delete') && aboveHtml.includes('chat-message__delete')) {
+        menuAbove.insertAdjacentHTML('beforeend', deleteHtml);
+      }
+      if (deleteHtml && belowHtml.includes('chat-message__delete') && menuBelow && !menuBelow.querySelector('.chat-message__delete') && !menuAbove.querySelector('.chat-message__delete')) {
+        menuBelow.insertAdjacentHTML('beforeend', deleteHtml);
+      }
+      bubble.querySelectorAll(':scope > .chat-message__delete, .chat-message__side-actions > .chat-message__delete').forEach((del) => {
+        if (menuAbove.contains(del) || menuBelow?.contains(del)) return;
+        if (aboveHtml.includes('chat-message__delete')) menuAbove.appendChild(del);
+        else if (menuBelow) menuBelow.appendChild(del);
+        else menuAbove.appendChild(del);
+      });
+    }
+    if (menuBelow) {
+      bubble.querySelectorAll(
+        '.chat-message__image-container .chat-message__media-download, .chat-message__video-container .chat-message__media-download, .chat-media-upload .chat-message__media-download, .chat-message__side-actions > .chat-message__media-download, .chat-file-bubble .chat-message__media-download--side'
+      ).forEach((btn) => {
+        btn.classList.add('chat-message__media-download--side');
+        if (!menuBelow.contains(btn)) menuBelow.appendChild(btn);
+      });
+      if (download && !menuBelow.querySelector('.chat-message__media-download, .torrent-bubble__download-btn, [data-download-url]')) {
+        menuBelow.insertAdjacentHTML('beforeend', download);
+      }
+    }
+    if (!side.querySelector('.chat-message__more-wrap') && !side.childElementCount) {
+      side.remove();
+      return null;
+    }
+    return side;
+  }
+
+  // חלק תצוגת העלאת מדיה (chat-ui.js) – מפת blob/URL מקומי לפי fileId לתצוגה כמו וואטסאפ | HYPER CORE TECH
+  const transferMediaPreviews = new Map();
+
+  function registerChatTransferPreview(fileId, info) {
+    if (!fileId || !info) return;
+    const prev = transferMediaPreviews.get(fileId);
+    transferMediaPreviews.set(fileId, {
+      url: info.url || prev?.url || '',
+      mime: info.mime || prev?.mime || '',
+      name: info.name || prev?.name || '',
+      size: info.size || prev?.size || 0,
+      posterDataUrl: info.posterDataUrl || prev?.posterDataUrl || '',
+    });
+  }
+  App.registerChatTransferPreview = registerChatTransferPreview;
+  App.getChatTransferPreviewPoster = function getChatTransferPreviewPoster(fileId) {
+    if (!fileId) return '';
+    return transferMediaPreviews.get(fileId)?.posterDataUrl || '';
+  };
+
+  // כיתוב לשליחת מדיה — מוצג כבר בבועת ההעלאה בצד השולח | HYPER CORE TECH
+  const transferCaptions = new Map();
+  function isPlaceholderFileCaption(text, fileName) {
+    const t = String(text || '').trim();
+    if (!t) return true;
+    const n = String(fileName || '').trim();
+    if (n && (t === n || t === `📎 ${n}`)) return true;
+    if (/^📎\s+\S+$/u.test(t)) return true;
+    return false;
+  }
+  function setChatTransferCaption(fileId, caption) {
+    const t = String(caption || '').trim();
+    if (!fileId || !t || isPlaceholderFileCaption(t)) return;
+    transferCaptions.set(fileId, t);
+  }
+  function getChatTransferCaption(fileId, progress) {
+    if (fileId && transferCaptions.has(fileId)) {
+      return transferCaptions.get(fileId) || '';
+    }
+    const fromProgress = String(progress?.caption || '').trim();
+    if (fromProgress && !isPlaceholderFileCaption(fromProgress, progress?.name)) return fromProgress;
+    try {
+      const att = state.activeContact ? App.getChatFileAttachment?.(state.activeContact) : null;
+      const fromAtt = String(att?.caption || '').trim();
+      if (fromAtt && !isPlaceholderFileCaption(fromAtt, att?.name || progress?.name)) return fromAtt;
+    } catch (_) {}
+    return '';
+  }
+  function buildTransferCaptionHtml(caption) {
+    const t = String(caption || '').trim();
+    if (!t) return '';
+    const safe = App.escapeHtml ? App.escapeHtml(t) : t;
+    return `<span class="chat-message__text">${safe.replace(/\n/g, '<br>')}</span>`;
+  }
+  function ensureTransferCaptionEl(contentEl, caption) {
+    if (!contentEl) return;
+    const t = String(caption || '').trim();
+    let textEl = contentEl.querySelector(':scope > .chat-message__text');
+    if (!t) {
+      if (textEl) textEl.remove();
+      contentEl.classList.remove('chat-message__content--media-caption');
+      return;
+    }
+    const html = buildTransferCaptionHtml(t);
+    if (textEl) {
+      textEl.outerHTML = html;
+    } else {
+      const upload = contentEl.querySelector('.chat-media-upload');
+      if (upload) upload.insertAdjacentHTML('afterend', html);
+      else contentEl.insertAdjacentHTML('beforeend', html);
+    }
+    contentEl.classList.add('chat-message__content--media-caption');
+  }
+  App.setChatTransferCaption = setChatTransferCaption;
+  App.getChatTransferCaption = getChatTransferCaption;
+
+  function resolveTransferPreview(progress) {
+    if (!progress) return { url: '', mime: '', name: '', isVideo: false, isImage: false };
+    const cached = transferMediaPreviews.get(progress.fileId) || {};
+    const att = state.activeContact ? App.getChatFileAttachment?.(state.activeContact) : null;
+    const attMatch = att && (!att.fileId || att.fileId === progress.fileId);
+    const url =
+      progress.previewUrl ||
+      cached.url ||
+      (attMatch && (att.previewUrl || att.dataUrl || att.url)) ||
+      '';
+    const mime = progress.mimeType || progress.type || cached.mime || (attMatch && att.type) || '';
+    const name = progress.name || cached.name || (attMatch && att.name) || '';
+    const isVideo =
+      /^video\//i.test(mime) ||
+      /\.(mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(name);
+    const isImage =
+      !isVideo &&
+      (/^image\//i.test(mime) ||
+        /\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(name));
+    return { url, mime, name, isVideo, isImage };
+  }
+
+  function isVisualMediaChatMessage(message) {
+    const a = message?.attachment;
+    if (!a) return false;
+    if (typeof App.isImageAttachment === 'function' && App.isImageAttachment(a)) return true;
+    if (typeof App.isVideoAttachment === 'function' && App.isVideoAttachment(a)) return true;
+    if (a.isVideo === true) return true;
+    const mime = String(a.type || '').toLowerCase();
+    if (mime.startsWith('image/') || mime.startsWith('video/')) return true;
+    const src = String(a.url || a.dataUrl || a.previewUrl || '');
+    if (/^data:image\//i.test(src)) return true;
+    if (mime.startsWith('audio/')) return false;
+    // לא לסווג מסמך כמדיה | HYPER CORE TECH
+    if (typeof App.isGenericFileAttachment === 'function' && App.isGenericFileAttachment(a)) {
+      if (!/\.(jpe?g|png|gif|webp|bmp|heic|mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(String(a.name || '') + ' ' + src)) {
+        return false;
+      }
+    }
+    return /\.(jpe?g|png|gif|webp|bmp|heic|mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(String(a.name || '') + ' ' + src);
+  }
+
+  // מוסיף תמונה/וידאו בלי renderMessages — כדי לא למחוק כרטיסי מסמכים | HYPER CORE TECH
+  function appendVisualMediaMessageWithoutWipe(message) {
+    if (!elements.messagesContainer || !message?.id) return false;
+    if (elements.messagesContainer.querySelector(`[data-message-id="${message.id}"]`)) return true;
+    if (!isVisualMediaChatMessage(message)) return false;
+
+    const emptyMsg = elements.messagesContainer.querySelector('.chat-conversation__empty');
+    if (emptyMsg) emptyMsg.remove();
+
+    let a = message.attachment || null;
+    if (a?.magnetURI && !(a.url || a.dataUrl) && typeof App.getTorrentBlob === 'function') {
+      const torrentBlob = App.getTorrentBlob(a.magnetURI);
+      if (torrentBlob?.url) a = { ...a, url: torrentBlob.url };
+    }
+    if (!a) return false;
+
+    const isOutgoing =
+      message.direction === 'outgoing' || message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+    const directionClass = isOutgoing ? 'chat-message--outgoing' : 'chat-message--incoming';
+    const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+    const isVid =
+      a.isVideo === true ||
+      (typeof App.isVideoAttachment === 'function' && App.isVideoAttachment(a)) ||
+      /^video\//i.test(a.type || '') ||
+      /\.(mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(a.name || '');
+    const attachmentHtml = isVid
+      ? (typeof App.renderVideoAttachment === 'function' ? App.renderVideoAttachment(a) : '')
+      : (typeof App.renderImageAttachment === 'function' ? App.renderImageAttachment(a) : '');
+    if (!attachmentHtml) return false;
+
+    const captionRaw = String(message.content || '').trim();
+    const fileOnlyLabel = `📎 ${a.name || 'קובץ מצורף'}`;
+    const captionText =
+      captionRaw && captionRaw !== fileOnlyLabel && captionRaw !== (a.name || '')
+        ? captionRaw
+        : '';
+    const safeCaption = captionText
+      ? (App.escapeHtml ? App.escapeHtml(captionText) : captionText).replace(/\n/g, '<br>')
+      : '';
+    const textHtml = safeCaption
+      ? `<span class="chat-message__text">${safeCaption}</span>`
+      : '';
+    const statusHtml = isOutgoing ? buildChatMessageStatusHtml(message.status || 'sent') : '';
+    const hideMeta = !textHtml;
+    const metaRowHtml = hideMeta
+      ? ''
+      : buildMessageMetaRowHtml(message, {
+        timeLabel: formatMessageTime(messageTimestamp),
+        isOutgoing,
+        statusHtml,
+        timeClass: 'chat-message__meta',
+      });
+    const sideDownloadHtml = buildChatMediaSideDownloadHtml(a, a.url || a.dataUrl || '', a.name || '');
+    const sideActionsHtml = buildChatSideActionsHtml({
+      isOutgoing,
+      messageId: message.id,
+      downloadHtml: sideDownloadHtml,
+      copyHtml: '',
+    });
+
+    let avatarHtml = '';
+    if (!isOutgoing) {
+      const normalizedFrom = message.from?.toLowerCase?.();
+      const contact = normalizedFrom && App.chatState?.contacts?.get?.(normalizedFrom);
+      const fallbackName = contact?.name || (normalizedFrom ? `משתמש ${normalizedFrom.slice(0, 8)}` : 'משתמש');
+      const safeName = App.escapeHtml ? App.escapeHtml(fallbackName) : fallbackName;
+      const initialsValue =
+        contact?.initials || (typeof App.getInitials === 'function' ? App.getInitials(fallbackName) : 'מש');
+      const safeInitials = App.escapeHtml ? App.escapeHtml(initialsValue) : initialsValue;
+      avatarHtml = contact?.picture
+        ? `<span class="chat-message__avatar" title="${safeName}"><img src="${contact.picture}" alt="${safeName}" loading="lazy" decoding="async" referrerpolicy="no-referrer"></span>`
+        : `<span class="chat-message__avatar chat-message__avatar--initials" title="${safeName}">${safeInitials}</span>`;
+    }
+
+    const contentClass = [
+      'chat-message__content',
+      'chat-message__content--has-attachment',
+      textHtml ? 'chat-message__content--media-caption' : (isVid ? 'chat-message__content--video-only' : 'chat-message__content--image-only'),
+    ].join(' ');
+
+    const item = doc.createElement('div');
+    item.className = `chat-message ${directionClass} chat-message--media chat-message--media-pending`;
+    item.setAttribute('data-message-id', message.id);
+    item.setAttribute('data-chat-created', String(messageTimestamp));
+    item.setAttribute('data-chat-from', String(message.from || App.publicKey || '').toLowerCase());
+    if (a.fileId) {
+      item.setAttribute('data-transfer-id', a.fileId);
+      item.setAttribute('data-p2p-file-id', a.fileId);
+    }
+    item.innerHTML = `
+      ${avatarHtml}
+      ${isOutgoing ? sideActionsHtml : ''}
+      <div class="${contentClass}" data-chat-message="${message.id}">
+        ${attachmentHtml}
+        ${textHtml}
+        ${metaRowHtml}
+      </div>
+      ${!isOutgoing ? sideActionsHtml : ''}
+    `;
+    ensureChatSideActions(item, {
+      isOutgoing,
+      messageId: message.id,
+      downloadHtml: sideDownloadHtml,
+    });
+    if (hideMeta && !isVid) {
+      item.querySelectorAll('.chat-message__image-container').forEach((imgWrap) => {
+        if (imgWrap.querySelector('[data-image-time-slot]')) return;
+        const slot = doc.createElement('span');
+        slot.className = 'chat-message__image-msg-time';
+        slot.setAttribute('data-image-time-slot', '');
+        slot.innerHTML = `<span class="chat-message__image-msg-time-text">${formatMessageTime(messageTimestamp)}</span>${statusHtml}`;
+        imgWrap.appendChild(slot);
+      });
+    }
+    if (hideMeta && isVid) {
+      item.querySelectorAll('[data-video-time-slot]').forEach((slot) => {
+        slot.innerHTML = `<span class="chat-message__video-msg-time-text">${formatMessageTime(messageTimestamp)}</span>${statusHtml}`;
+      });
+    }
+
+    elements.messagesContainer.appendChild(item);
+    stickChatToBottomIfPinned({ force: true });
+    return true;
+  }
+
+  function isOutgoingMediaTransfer(progress) {
+    if (!progress || progress.direction === 'receive') return false;
+    const preview = resolveTransferPreview(progress);
+    return preview.isVideo || preview.isImage;
+  }
+
+  // הודעה קולית / אודיו — נגן, לא כרטיס מסמך | HYPER CORE TECH
+  function isVoiceOrAudioChatMessage(messageOrAttachment) {
+    const a =
+      messageOrAttachment && typeof messageOrAttachment === 'object' && 'attachment' in messageOrAttachment
+        ? messageOrAttachment.attachment
+        : messageOrAttachment;
+    if (!a || typeof a !== 'object') return false;
+    if (a.isVoice === true) return true;
+    const mediaMime =
+      a.media && typeof a.media.mime === 'string' ? String(a.media.mime).toLowerCase() : '';
+    if (mediaMime.startsWith('audio/') || mediaMime === 'application/ogg') return true;
+    const mime = String(a.type || a.mimeType || '').toLowerCase();
+    if (mime === 'encrypted-media') {
+      // encrypted-media: private MIME lives only in media.mime / isVoice
+      const mediaName =
+        a.media && typeof a.media.filename === 'string' ? String(a.media.filename).toLowerCase() : '';
+      if (mediaName.includes('voice') || mediaName.includes('ptt') || mediaName.includes('voicemessage')) {
+        return true;
+      }
+      if (typeof a.duration === 'number' && a.duration > 0) return true;
+      return false;
+    }
+    if (mime.startsWith('audio/') || mime === 'application/ogg') return true;
+    const name = String(a.name || '').toLowerCase();
+    if (name.includes('voice') || name.includes('ptt') || name.includes('voicemessage')) return true;
+    if (typeof a.duration === 'number' && a.duration > 0) return true;
+    if (/\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|amr|caf)(\?|$)/i.test(name)) return true;
+    const src = String(a.url || a.dataUrl || a.previewUrl || '');
+    if (/^data:audio\//i.test(src)) return true;
+    return false;
+  }
+
+  // קבצי ZIP/PDF וכו' — כרטיס סופי + מד עגול (שולח ומקבל), בלי torrent-bubble קופץ | HYPER CORE TECH
+  function isFileCardTransfer(progress) {
+    if (!progress) return false;
+    if (progress.isFileCard === true) return true;
+    if (progress.isFileCard === false) return false;
+    if (progress.isVoice === true) return false;
+    const preview = resolveTransferPreview(progress);
+    if (preview.isVideo || preview.isImage) return false;
+    const mime = String(progress.mimeType || progress.type || '').toLowerCase();
+    if (mime.startsWith('audio/') || mime === 'application/ogg') return false;
+    if (mime.startsWith('image/') || mime.startsWith('video/')) return false;
+    const name = String(progress.name || '');
+    if (/voice|ptt|voicemessage/i.test(name)) return false;
+    if (/\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|amr|caf)$/i.test(name)) return false;
+    if (/\.(jpe?g|png|gif|webp|bmp|heic|mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(name)) return false;
+    return true;
+  }
+
+  function findExistingFileMessageBubble(progress) {
+    if (!elements.messagesContainer || !progress) return null;
+    const magnet = String(progress.magnetURI || '').trim();
+    if (magnet) {
+      const nodes = elements.messagesContainer.querySelectorAll('[data-magnet-uri]');
+      for (let i = 0; i < nodes.length; i += 1) {
+        if (nodes[i].getAttribute('data-magnet-uri') === magnet) return nodes[i];
+      }
+    }
+    const tid = progress.torrentTransferId || progress.fileId;
+    if (tid) {
+      const byTid = elements.messagesContainer.querySelector(`[data-torrent-transfer="${tid}"]`);
+      if (byTid && !byTid.querySelector('.chat-media-upload')) return byTid;
+    }
+    return null;
+  }
+
+  // poster שחור — רק ב־Android WebView (מונע פליי לבן); בווב מציגים את הפריים מיד | HYPER CORE TECH
+  const MEDIA_UPLOAD_BLACK_POSTER = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYGD4DwABBAEAgLvRWwAAAABJRU5ErkJggg==';
+
+  function needsAndroidVideoPlaceholder() {
+    try {
+      if (window.SosNativeShell) return true;
+      const ua = navigator.userAgent || '';
+      if (/SOSNativeShell\//i.test(ua)) return true;
+      if (/Android/i.test(ua)) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function bindMediaUploadVideoReveal(bubble) {
+    const wrap = bubble?.querySelector?.('.chat-media-upload');
+    const mediaEl = bubble?.querySelector?.('video.chat-media-upload__media');
+    if (!wrap || !mediaEl || mediaEl.dataset.revealBound === '1') return;
+    mediaEl.dataset.revealBound = '1';
+    const androidPlaceholder = needsAndroidVideoPlaceholder();
+    mediaEl.style.background = '#000';
+
+    if (androidPlaceholder) {
+      if (!mediaEl.getAttribute('poster')) mediaEl.setAttribute('poster', MEDIA_UPLOAD_BLACK_POSTER);
+      wrap.classList.add('chat-media-upload--pending');
+      mediaEl.style.opacity = '0';
+      mediaEl.style.visibility = 'hidden';
+    } else {
+      // ווב: מציגים את הווידאו מיד — בלי מסך שחור על כל ההעלאה | HYPER CORE TECH
+      wrap.classList.remove('chat-media-upload--pending');
+      mediaEl.removeAttribute('poster');
+      mediaEl.style.opacity = '1';
+      mediaEl.style.visibility = 'visible';
+      mediaEl.preload = 'auto';
+    }
+
+    const capturePosterFromVisibleVideo = () => {
+      try {
+        if (mediaEl.dataset.posterCaptured === '1') return;
+        const w = mediaEl.videoWidth;
+        const h = mediaEl.videoHeight;
+        if (!w || !h || mediaEl.readyState < 2) return;
+        const canvas = document.createElement('canvas');
+        const scale = Math.min(1, 640 / w);
+        canvas.width = Math.max(1, Math.round(w * scale));
+        canvas.height = Math.max(1, Math.round(h * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(mediaEl, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+        if (dataUrl && dataUrl.startsWith('data:image') && dataUrl.length > 200) {
+          mediaEl.poster = dataUrl;
+          mediaEl.dataset.posterCaptured = '1';
+          const fileId = bubble.getAttribute('data-transfer-id');
+          if (fileId) registerChatTransferPreview(fileId, { posterDataUrl: dataUrl });
+        }
+      } catch (_) {}
+    };
+
+    const reveal = () => {
+      const w = mediaEl.videoWidth;
+      const h = mediaEl.videoHeight;
+      if (!w || !h) return;
+      sizeMediaUploadWrap(wrap, w, h);
+      wrap.dataset.mediaReady = '1';
+      wrap.classList.remove('chat-media-upload--pending');
+      mediaEl.classList.add('is-ready');
+      mediaEl.style.opacity = '1';
+      mediaEl.style.visibility = 'visible';
+      capturePosterFromVisibleVideo();
+    };
+
+    mediaEl.addEventListener('loadedmetadata', reveal);
+    mediaEl.addEventListener('loadeddata', () => {
+      reveal();
+      capturePosterFromVisibleVideo();
+    });
+    mediaEl.addEventListener('canplay', () => {
+      reveal();
+      capturePosterFromVisibleVideo();
+    });
+    setTimeout(() => {
+      if (mediaEl.videoWidth && mediaEl.videoHeight) reveal();
+      else if (androidPlaceholder) {
+        wrap.classList.remove('chat-media-upload--pending');
+        wrap.style.aspectRatio = wrap.style.aspectRatio || '3 / 4';
+      }
+    }, 4000);
+    if (mediaEl.readyState >= 1) reveal();
+
+    // ווב: אם יש כבר תקציר מוכן מראש — שמים אותו מיד | HYPER CORE TECH
+    const fileId = bubble.getAttribute('data-transfer-id');
+    const readyPoster = fileId ? App.getChatTransferPreviewPoster?.(fileId) : '';
+    if (readyPoster && readyPoster.length > 200) {
+      mediaEl.poster = readyPoster;
+      mediaEl.dataset.posterCaptured = '1';
+      if (!androidPlaceholder) {
+        wrap.classList.remove('chat-media-upload--pending');
+        mediaEl.style.opacity = '1';
+        mediaEl.style.visibility = 'visible';
+      }
+    }
+  }
+
+  function buildMediaUploadRingHtml(pct) {
+    // טבעת גדולה יותר (~22px) — ברורה יותר למשתמש בזמן העלאה | HYPER CORE TECH
+    const r = 9.5;
+    const c = 2 * Math.PI * r;
+    const offset = c * (1 - Math.max(0, Math.min(100, pct)) / 100);
+    // stroke כ־attribute — WebView לפעמים מתעלם מ־CSS stroke על SVG | HYPER CORE TECH
+    return `
+      <svg class="chat-media-upload__ring" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="chat-media-upload__ring-bg" cx="12" cy="12" r="${r}" fill="none" stroke="rgba(255,255,255,0.35)" stroke-width="2.6"></circle>
+        <circle class="chat-media-upload__ring-fg" cx="12" cy="12" r="${r}" fill="none" stroke="#ff2d55" stroke-width="3" stroke-linecap="round"
+          stroke-dasharray="${c.toFixed(2)}"
+          stroke-dashoffset="${offset.toFixed(2)}"></circle>
+      </svg>
+    `;
+  }
+
+  // מילוי אדום על הספינר המרכזי — בלי לגעת בספינר הלבן עצמו | HYPER CORE TECH
+  function mediaUploadSpinnerFillMetrics(pct) {
+    const r = 24.5;
+    const c = 2 * Math.PI * r;
+    const offset = c * (1 - Math.max(0, Math.min(100, pct)) / 100);
+    return { r, c, offset };
+  }
+
+  function buildMediaUploadSpinnerFillHtml(pct) {
+    const { r, c, offset } = mediaUploadSpinnerFillMetrics(pct);
+    return `
+      <svg class="chat-media-upload__spinner-fill" viewBox="0 0 52 52" aria-hidden="true">
+        <circle class="chat-media-upload__spinner-fill-fg" cx="26" cy="26" r="${r}" fill="none" stroke="#ff2d55" stroke-width="3.2" stroke-linecap="round"
+          stroke-dasharray="${c.toFixed(2)}"
+          stroke-dashoffset="${offset.toFixed(2)}"></circle>
+      </svg>
+    `;
+  }
+
+  function updateMediaUploadSpinnerFill(host, pct) {
+    if (!host) return;
+    let fillFg = host.querySelector('.chat-media-upload__spinner-fill-fg');
+    if (!fillFg) {
+      host.insertAdjacentHTML('beforeend', buildMediaUploadSpinnerFillHtml(pct));
+      return;
+    }
+    const { c, offset } = mediaUploadSpinnerFillMetrics(pct);
+    fillFg.setAttribute('stroke-dasharray', c.toFixed(2));
+    fillFg.setAttribute('stroke-dashoffset', offset.toFixed(2));
+    fillFg.setAttribute('stroke', '#ff2d55');
+  }
+
+  function formatMediaUploadPct(pct) {
+    return String(Math.max(0, Math.min(100, Math.round(Number(pct) || 0))));
+  }
+
+  function buildMediaUploadPctHtml(pct) {
+    const n = formatMediaUploadPct(pct);
+    const triple = n.length >= 3 ? ' chat-media-upload__pct--triple' : '';
+    return `<span class="chat-media-upload__pct${triple}"><span class="chat-media-upload__pct-num">${n}</span><span class="chat-media-upload__pct-sign">%</span></span>`;
+  }
+
+  function updateMediaUploadCenterProgress(host, pct) {
+    if (!host) return;
+    updateMediaUploadSpinnerFill(host, pct);
+    const n = formatMediaUploadPct(pct);
+    let label = host.querySelector('.chat-media-upload__pct');
+    if (!label) {
+      host.insertAdjacentHTML('beforeend', buildMediaUploadPctHtml(pct));
+      label = host.querySelector('.chat-media-upload__pct');
+    }
+    if (!label) return;
+    const num = label.querySelector('.chat-media-upload__pct-num');
+    if (num && num.textContent !== n) {
+      num.textContent = n;
+      label.classList.remove('chat-media-upload__pct--tick');
+      // reflow כדי להפעיל מחדש אנימציית tick | HYPER CORE TECH
+      void label.offsetWidth;
+      label.classList.add('chat-media-upload__pct--tick');
+    }
+    label.classList.toggle('chat-media-upload__pct--triple', n.length >= 3);
+  }
+
+  // בועות מדיה שהומרו להודעה סופית — לא מוחקים ולא מרנדרים מחדש | HYPER CORE TECH
+  const settledMediaTransferIds = new Set();
+
+  function sizeMediaUploadWrap(wrap, w, h) {
+    if (!wrap || !w || !h) return;
+    if (typeof App.applyChatMediaBoxSize === 'function') {
+      const box = App.applyChatMediaBoxSize(wrap, w, h, { force: true });
+      if (box) {
+        wrap.dataset.mediaReady = '1';
+        wrap.classList.toggle('chat-media-upload--portrait', !!box.portrait);
+        wrap.classList.toggle('chat-media-upload--landscape', !box.portrait);
+      }
+      stickChatToBottomIfPinned();
+      return;
+    }
+    // fallback אם המודול עדיין לא נטען | HYPER CORE TECH
+    const col = wrap.closest?.('.chat-conversation__messages') || document.getElementById('chatMessages');
+    const raw = col?.clientWidth || window.innerWidth || 360;
+    const narrow = raw < 480;
+    const avail = Math.max(
+      200,
+      Math.floor(raw * (narrow ? 0.82 : 0.52)) - (narrow ? 8 : 24) - (narrow ? 0 : 64)
+    );
+    const portrait = h > w;
+    const maxW = Math.min(avail, portrait ? (narrow ? Math.min(avail, 280) : 290) : (narrow ? avail : 280));
+    const maxH = portrait
+      ? Math.min(Math.round((window.innerHeight || 640) * (narrow ? 0.52 : 0.58)), narrow ? 420 : 500)
+      : Math.min(Math.round((window.innerHeight || 640) * (narrow ? 0.45 : 0.35)), narrow ? 340 : 280);
+    let dispW = maxW;
+    let dispH = dispW * (h / w);
+    if (dispH > maxH) {
+      dispH = maxH;
+      if (!portrait) dispW = dispH * (w / h);
+    }
+    wrap.style.width = `${Math.round(dispW)}px`;
+    wrap.style.height = `${Math.round(dispH)}px`;
+    wrap.style.maxWidth = `${Math.round(dispW)}px`;
+    wrap.style.maxHeight = `${Math.round(dispH)}px`;
+    wrap.style.minWidth = '0';
+    wrap.style.minHeight = '0';
+    wrap.style.aspectRatio = `${w} / ${h}`;
+    wrap.classList.toggle('chat-media-upload--portrait', portrait);
+    wrap.classList.toggle('chat-media-upload--landscape', !portrait);
+    stickChatToBottomIfPinned();
+  }
+
+  function settleOutgoingMediaTransfer(message) {
+    const fileId = message?.attachment?.fileId;
+    if (!fileId || !elements.messagesContainer) return false;
+    if (message.direction === 'incoming') return false;
+    const a = message.attachment;
+    const isVid =
+      a?.isVideo === true ||
+      (typeof App.isVideoAttachment === 'function' && App.isVideoAttachment(a)) ||
+      /^video\//i.test(a?.type || '') ||
+      /\.(mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(a?.name || '');
+    const isImg =
+      !isVid &&
+      ((typeof App.isImageAttachment === 'function' && App.isImageAttachment(a)) ||
+        /^image\//i.test(a?.type || '') ||
+        /\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(a?.name || ''));
+    if (!isVid && !isImg) return false;
+
+    if (settledMediaTransferIds.has(fileId)) {
+      return !!elements.messagesContainer.querySelector(`[data-message-id="${message.id}"], [data-p2p-file-id="${fileId}"]`);
+    }
+
+    const bubble = elements.messagesContainer.querySelector(`[data-transfer-id="${fileId}"]`);
+    if (!bubble?.querySelector?.('.chat-media-upload')) {
+      return !!elements.messagesContainer.querySelector(`[data-message-id="${message.id}"]`);
+    }
+
+    const wrap = bubble.querySelector('.chat-media-upload');
+    const mediaEl = bubble.querySelector('.chat-media-upload__media');
+    const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+    const timeLabel = formatMessageTime(messageTimestamp);
+    const statusHtml = buildChatMessageStatusHtml(message.status || 'sent');
+
+    bubble.className = `chat-message chat-message--outgoing chat-message--media-settled`;
+    bubble.setAttribute('data-message-id', message.id);
+    bubble.setAttribute('data-p2p-file-id', fileId);
+    bubble.setAttribute('data-chat-created', String(messageTimestamp));
+    bubble.setAttribute('data-chat-from', String(message.from || App.publicKey || '').toLowerCase());
+    bubble.removeAttribute('data-torrent-transfer');
+
+    wrap?.querySelector?.('.chat-media-upload__overlay')?.remove();
+    wrap?.querySelector?.('[data-cancel-transfer]')?.remove();
+    wrap?.querySelector?.('.chat-media-upload__status')?.remove();
+    const footer = wrap?.querySelector?.('.chat-media-upload__footer');
+    if (footer) {
+      footer.innerHTML = `
+        ${buildMessageTransportIndicatorHtml(message)}
+        <span class="chat-media-upload__time">${timeLabel}</span>
+        <span class="chat-media-upload__ring-slot">${statusHtml}</span>
+      `;
+    }
+
+    const dl = buildChatMediaSideDownloadHtml(a, a?.url || a?.dataUrl || '', a?.name || '');
+    ensureChatSideActions(bubble, {
+      isOutgoing: true,
+      messageId: message.id,
+      downloadHtml: dl,
+    });
+
+    const content = bubble.querySelector('.chat-message__content');
+    if (content) {
+      content.setAttribute('data-chat-message', message.id);
+      content.classList.add('chat-message__content--media-upload');
+      const captionFromMsg = isPlaceholderFileCaption(message.content, a?.name)
+        ? ''
+        : String(message.content || '').trim();
+      const captionText = captionFromMsg || getChatTransferCaption(fileId) || String(a?.caption || '').trim();
+      if (captionText) setChatTransferCaption(fileId, captionText);
+      ensureTransferCaptionEl(content, captionText);
+      // עם כיתוב: שעה מתחת לטקסט כמו וואטסאפ | HYPER CORE TECH
+      if (captionText) {
+        wrap?.querySelector?.('.chat-media-upload__footer')?.remove();
+        let meta = content.querySelector(':scope > .chat-message__meta-row');
+        const metaHtml = buildMessageMetaRowHtml(message, {
+          timeLabel,
+          isOutgoing: true,
+          statusHtml,
+          timeClass: 'chat-message__meta',
+        });
+        if (meta) meta.outerHTML = metaHtml;
+        else content.insertAdjacentHTML('beforeend', metaHtml);
+      }
+    }
+
+    if (isVid && mediaEl && wrap && wrap.dataset.settleBound !== '1') {
+      wrap.dataset.settleBound = '1';
+      const src = a.url || mediaEl.currentSrc || mediaEl.src || '';
+      const name = a.name || 'video';
+      const type = a.type || 'video/mp4';
+      const open = (event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        if (typeof App.openVideoLightbox === 'function' && src) {
+          App.openVideoLightbox(src, name, type, wrap);
+        }
+      };
+      wrap.style.cursor = 'pointer';
+      wrap.addEventListener('click', open);
+      mediaEl.style.pointerEvents = 'none';
+    } else if (isImg && mediaEl && wrap && wrap.dataset.settleBound !== '1') {
+      wrap.dataset.settleBound = '1';
+      const name = a.name || 'תמונה';
+      wrap.style.cursor = 'pointer';
+      wrap.addEventListener('click', (event) => {
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        const src = mediaEl.currentSrc || mediaEl.src || a.url || '';
+        if (typeof App.openImageLightbox === 'function' && src) {
+          App.openImageLightbox(src, name, wrap);
+        }
+      });
+    }
+
+    if (isVid && mediaEl?.videoWidth && mediaEl?.videoHeight) {
+      sizeMediaUploadWrap(wrap, mediaEl.videoWidth, mediaEl.videoHeight);
+    } else if (isImg && mediaEl?.naturalWidth && mediaEl?.naturalHeight) {
+      sizeMediaUploadWrap(wrap, mediaEl.naturalWidth, mediaEl.naturalHeight);
+    }
+
+    settledMediaTransferIds.add(fileId);
+    state.transferProgress.delete(fileId);
+    transferCaptions.delete(fileId);
+    // אחרי settle מדיה — מוודאים שכרטיסי מסמכים לא נעלמו במרוץ | HYPER CORE TECH
+    const peer =
+      message?.to ||
+      message?.peerPubkey ||
+      state.activeContact ||
+      '';
+    if (peer) {
+      try {
+        ensureUnifiedFileCardsVisible(peer);
+        setTimeout(() => ensureUnifiedFileCardsVisible(peer), 50);
+      } catch (_) {}
+    }
+    return true;
+  }
+
+  // חלק settle קובץ ZIP (chat-ui.js) – ממיר בועת העברה לכרטיס הודעה אחד בלי כרטיס שני | HYPER CORE TECH
+  function extractMessageMagnet(message) {
+    const fromAtt = message?.attachment?.magnetURI || '';
+    if (fromAtt) return String(fromAtt).trim();
+    const raw = typeof message?.content === 'string' ? message.content.trim() : '';
+    if (!raw || raw[0] !== '{') return '';
+    try {
+      const data = JSON.parse(raw);
+      return String(data?.magnetURI || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function extractMessageTorrentTransferId(message) {
+    const fromAtt = message?.attachment?.fileId || message?.attachment?.id || '';
+    if (fromAtt) return String(fromAtt);
+    const raw = typeof message?.content === 'string' ? message.content.trim() : '';
+    if (!raw || raw[0] !== '{') return '';
+    try {
+      const data = JSON.parse(raw);
+      return String(data?.transferId || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function findFileCardTransferBubble({ fileId, magnetURI, transferId } = {}) {
+    if (!elements.messagesContainer) return null;
+    if (fileId) {
+      const byFile = elements.messagesContainer.querySelector(`[data-transfer-id="${fileId}"]`);
+      if (byFile?.querySelector?.('.chat-file-upload, .chat-file-bubble')) return byFile;
+    }
+    if (transferId) {
+      const byTid = elements.messagesContainer.querySelector(`[data-torrent-transfer="${transferId}"]`);
+      if (byTid?.querySelector?.('.chat-file-upload, .chat-file-bubble')) return byTid;
+    }
+    const magnet = String(magnetURI || '').trim();
+    if (magnet) {
+      const nodes = elements.messagesContainer.querySelectorAll('.chat-message--file-card-transfer[data-magnet-uri], [data-magnet-uri]');
+      for (let i = 0; i < nodes.length; i += 1) {
+        if (nodes[i].getAttribute('data-magnet-uri') === magnet) return nodes[i];
+      }
+    }
+    return null;
+  }
+
+  // מסמך/ZIP/TXT וכו' — תמיד כרטיס file-card-transfer (לא בועה רגילה עם chat-file-bubble בפנים) | HYPER CORE TECH
+  function getTorrentJsonMeta(message) {
+    const raw = typeof message?.content === 'string' ? message.content.trim() : '';
+    if (!raw || raw[0] !== '{') return null;
+    if (!raw.includes('magnetURI') && !raw.includes('torrent-transfer-request') && !raw.includes('infoHash')) {
+      return null;
+    }
+    try {
+      const data = JSON.parse(raw);
+      if (data?.type === 'torrent-transfer-request' || (data?.magnetURI && data?.infoHash)) return data;
+    } catch (_) {}
+    return null;
+  }
+
+  function messageUsesUnifiedFileCard(message) {
+    const a = message?.attachment;
+    if (a) {
+      if (isVoiceOrAudioChatMessage(a)) return false;
+      if (typeof App.isImageAttachment === 'function' && App.isImageAttachment(a)) return false;
+      if (typeof App.isVideoAttachment === 'function' && App.isVideoAttachment(a)) return false;
+      const mime = String(a.type || '').toLowerCase();
+      if (mime.startsWith('audio/')) return false;
+      // PDF/HTML נשארים במסלול התצוגה המיוחד שלהם | HYPER CORE TECH
+      if (typeof App.isPdfAttachment === 'function' && App.isPdfAttachment(a)) return false;
+      if (typeof App.isHtmlAttachment === 'function' && App.isHtmlAttachment(a)) return false;
+      if (typeof App.isGenericFileAttachment === 'function') return App.isGenericFileAttachment(a);
+      return !!(a.name || a.magnetURI || a.url || a.dataUrl || a.fileId);
+    }
+    const td = getTorrentJsonMeta(message);
+    if (!td) return false;
+    const name = String(td.fileName || '');
+    if (/voice|ptt|voicemessage/i.test(name)) return false;
+    if (/\.(jpe?g|png|gif|webp|bmp|heic|mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(name)) return false;
+    if (/\.(mp3|m4a|aac|ogg|wav|flac|opus)$/i.test(name)) return false;
+    return true;
+  }
+
+  function fileCardDomExists(messageOrId, fileId) {
+    if (!elements.messagesContainer) return false;
+    const mid = messageOrId && typeof messageOrId === 'object'
+      ? (messageOrId.id != null ? String(messageOrId.id) : '')
+      : String(messageOrId || '');
+    if (mid) {
+      try {
+        const byMid = elements.messagesContainer.querySelector(
+          `[data-message-id="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(mid) : mid.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`
+        );
+        if (byMid?.querySelector?.('.chat-file-upload, .chat-file-bubble')) return true;
+      } catch (_) {
+        const byMid = elements.messagesContainer.querySelector(`[data-message-id="${mid}"]`);
+        if (byMid?.querySelector?.('.chat-file-upload, .chat-file-bubble')) return true;
+      }
+    }
+    const fid = String(fileId || (messageOrId && messageOrId.attachment?.fileId) || '').trim();
+    if (fid) {
+      const byFid = elements.messagesContainer.querySelector(
+        `[data-transfer-id="${fid}"], [data-p2p-file-id="${fid}"]`
+      );
+      if (byFid?.querySelector?.('.chat-file-upload, .chat-file-bubble')) return true;
+    }
+    return false;
+  }
+
+  // אחרי רינדור/מרוץ — מוודא שכל מסמך במאגר באמת מוצג (מתקן צץ-ונעלם) | HYPER CORE TECH
+  function ensureUnifiedFileCardsVisible(peerPubkey) {
+    if (!elements.messagesContainer || !peerPubkey) return;
+    const list = typeof App.getChatMessages === 'function' ? App.getChatMessages(peerPubkey) : [];
+    if (!list.length) return;
+    const startIndex = Math.max(0, list.length - _visibleMessageLimit);
+    const visible = list.slice(startIndex);
+    // מסמכים לעולם לא media-pending — אם נדבקו בטעות, חושפים | HYPER CORE TECH
+    elements.messagesContainer.querySelectorAll('.chat-message--file-card-transfer').forEach((el) => {
+      el.classList.remove('chat-message--media-pending', 'chat-message--media-failed');
+      if (el.hidden) el.hidden = false;
+      if (el.style?.display === 'none') el.style.display = '';
+    });
+    visible.forEach((message, idx) => {
+      if (!messageUsesUnifiedFileCard(message)) return;
+      if (isIncomingTransferPending(message)) return;
+      if (fileCardDomExists(message)) return;
+      const item = doc.createElement('div');
+      settleFileCardBubble(item, message);
+      let placed = false;
+      for (let i = idx - 1; i >= 0; i -= 1) {
+        const prevId = visible[i]?.id != null ? String(visible[i].id) : '';
+        if (!prevId) continue;
+        const prevEl = elements.messagesContainer.querySelector(`[data-message-id="${prevId}"]`);
+        if (prevEl) {
+          prevEl.insertAdjacentElement('afterend', item);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        for (let i = idx + 1; i < visible.length; i += 1) {
+          const nextId = visible[i]?.id != null ? String(visible[i].id) : '';
+          if (!nextId) continue;
+          const nextEl = elements.messagesContainer.querySelector(`[data-message-id="${nextId}"]`);
+          if (nextEl) {
+            nextEl.insertAdjacentElement('beforebegin', item);
+            placed = true;
+            break;
+          }
+        }
+      }
+      if (!placed) elements.messagesContainer.appendChild(item);
+    });
+  }
+  App.ensureUnifiedFileCardsVisible = ensureUnifiedFileCardsVisible;
+  App.getActiveChatPeer = () => state.activeContact || null;
+
+  function takePreservedUnsettledFileCard(preservedSettled, message) {
+    if (!preservedSettled || !preservedSettled.size) return null;
+    const wantName = String(message?.attachment?.name || '').trim().toLowerCase();
+    const candidates = [];
+    const seen = new Set();
+    preservedSettled.forEach((el) => {
+      if (!el || seen.has(el)) return;
+      seen.add(el);
+      if (el.getAttribute('data-message-id')) return;
+      if (!el.classList.contains('chat-message--file-card-transfer') && !el.querySelector('.chat-file-upload')) return;
+      candidates.push(el);
+    });
+    if (!candidates.length) return null;
+    let pick = null;
+    if (wantName) {
+      pick =
+        candidates.find((el) => {
+          const name = String(readFileNameFromBubbleEl(el.querySelector('.chat-file-bubble__name')) || '')
+            .trim()
+            .toLowerCase();
+          return name && name === wantName;
+        }) || null;
+    }
+    if (!pick && candidates.length === 1) pick = candidates[0];
+    if (!pick) return null;
+    const keysToDelete = [];
+    preservedSettled.forEach((el, key) => {
+      if (el === pick) keysToDelete.push(key);
+    });
+    keysToDelete.forEach((key) => preservedSettled.delete(key));
+    return pick;
+  }
+
+  function buildChatMessageStatusHtml(status) {
+    const st = String(status || 'sent');
+    if (st === 'sending' || st === 'queued') {
+      return '<span class="chat-message__status chat-message__status--sending" title="שולח..."><i class="fa-solid fa-clock"></i></span>';
+    }
+    if (st === 'failed') {
+      return '<span class="chat-message__status chat-message__status--failed" title="שליחה נכשלה"><i class="fa-solid fa-exclamation-circle"></i></span>';
+    }
+    if (st === 'read') {
+      return '<span class="chat-message__status chat-message__status--read" title="נקרא"><i class="fa-solid fa-check-double"></i></span>';
+    }
+    return '<span class="chat-message__status chat-message__status--sent" title="נשלח"><i class="fa-solid fa-check-double"></i></span>';
+  }
+  App.buildChatMessageStatusHtml = buildChatMessageStatusHtml;
+
+  function buildMessageTransportIndicatorHtml(message) {
+    const transport = typeof App.getChatMessageTransport === 'function'
+      ? App.getChatMessageTransport(message)
+      : '';
+    if (String(transport || '').toUpperCase() !== 'DC') return '';
+    return '<span class="chat-message__p2p-lamp" title="הועבר ישירות P2P" aria-label="הודעה הועברה ישירות P2P"></span>';
+  }
+  App.buildMessageTransportIndicatorHtml = buildMessageTransportIndicatorHtml;
+
+  function buildMessageMetaRowHtml(message, options) {
+    const opts = options || {};
+    const messageTimestamp = (message && message.createdAt) || Math.floor(Date.now() / 1000);
+    const timeLabel = opts.timeLabel || formatMessageTime(messageTimestamp);
+    const isOutgoing = opts.isOutgoing != null
+      ? !!opts.isOutgoing
+      : !!(message && (message.direction === 'outgoing' || message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.()));
+    const statusHtml = opts.statusHtml != null
+      ? opts.statusHtml
+      : (isOutgoing ? buildChatMessageStatusHtml((message && message.status) || 'sent') : '');
+    const lampHtml = opts.includeTransport === false ? '' : buildMessageTransportIndicatorHtml(message);
+    const timeClass = opts.timeClass || 'chat-message__meta';
+    const rowClass = opts.rowClass || 'chat-message__meta-row';
+    return `<div class="${rowClass}">${lampHtml}<span class="${timeClass}">${timeLabel}</span>${statusHtml || ''}</div>`;
+  }
+  App.buildMessageMetaRowHtml = buildMessageMetaRowHtml;
+
+  function settleFileCardBubble(bubble, message) {
+    if (!bubble || !message) return false;
+    const isOutgoing =
+      message.direction === 'outgoing' || message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+    const directionClass = isOutgoing ? 'chat-message--outgoing' : 'chat-message--incoming';
+    const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+    const timeLabel = formatMessageTime(messageTimestamp);
+    const torrentMeta = getTorrentJsonMeta(message);
+    const magnet = extractMessageMagnet(message) || String(torrentMeta?.magnetURI || '').trim();
+    const transferId =
+      extractMessageTorrentTransferId(message) || String(torrentMeta?.transferId || '').trim();
+    const fileId =
+      message?.attachment?.fileId || transferId || bubble.getAttribute('data-transfer-id') || '';
+    const a = message.attachment || null;
+    const statusHtml = isOutgoing ? buildChatMessageStatusHtml(message.status || 'sent') : '';
+    const label =
+      a?.name ||
+      torrentMeta?.fileName ||
+      readFileNameFromBubbleEl(bubble.querySelector('.chat-file-bubble__name')) ||
+      'קובץ';
+    const sizeLabel =
+      (typeof a?.size === 'number' && a.size > 0 ? formatTransferSize(a.size) : '') ||
+      (typeof torrentMeta?.fileSize === 'number' && torrentMeta.fileSize > 0
+        ? formatTransferSize(torrentMeta.fileSize)
+        : '') ||
+      bubble.querySelector('.chat-file-bubble__size')?.textContent ||
+      '';
+    const fileIcon = getTransferFileIcon(label);
+    const blobUrl =
+      (magnet && typeof App.getTorrentBlob === 'function' ? App.getTorrentBlob(magnet)?.url : '') ||
+      a?.url ||
+      a?.dataUrl ||
+      '';
+
+    bubble.className = `chat-message ${directionClass} chat-message--file-card-transfer chat-message--file-card-settled chat-message--file-card-transfer-done`;
+    bubble.setAttribute('data-message-id', message.id);
+    if (fileId) {
+      bubble.setAttribute('data-transfer-id', fileId);
+      bubble.setAttribute('data-p2p-file-id', fileId);
+    }
+    if (transferId) bubble.setAttribute('data-torrent-transfer', transferId);
+    if (magnet) bubble.setAttribute('data-magnet-uri', magnet);
+    bubble.setAttribute('data-chat-created', String(messageTimestamp));
+    bubble.setAttribute('data-chat-from', String(message.from || App.publicKey || '').toLowerCase());
+
+    // בנייה מלאה בסיום — בלי מד התקדמות | HYPER CORE TECH
+    const encryptedDurable = !!(a && a.type === 'encrypted-media' && a.resource && a.resource.transport === 'blossom');
+    const localOnly = blobUrl && (String(blobUrl).startsWith('blob:') || String(blobUrl).startsWith('data:')) ? blobUrl : '';
+    const downloadHtml = encryptedDurable
+      ? `<button type="button" class="chat-file-bubble__download" data-chat-secure-download="1" data-message-id="${String(message.id || '').replace(/"/g, '')}" data-filename="${App.escapeHtml ? App.escapeHtml(label) : label}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`
+      : (localOnly
+      ? (() => {
+          const safeUrl = App.escapeHtml ? App.escapeHtml(localOnly) : String(localOnly).replace(/"/g, '&quot;');
+          const safeName = App.escapeHtml ? App.escapeHtml(label) : label;
+          return `<button type="button" class="chat-file-bubble__download" data-download-url="${safeUrl}" data-filename="${safeName}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+        })()
+      : (!isOutgoing && magnet
+        ? (() => {
+            const safeMagnet = App.escapeHtml ? App.escapeHtml(magnet) : magnet.replace(/"/g, '&quot;');
+            const safeName = App.escapeHtml ? App.escapeHtml(label) : label;
+            return `<button type="button" class="chat-file-bubble__download torrent-bubble__download-btn" data-magnet="${safeMagnet}" data-filename="${safeName}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+          })()
+        : ''));
+
+    // תמיד content נפרד — אחרת className על הבועה עצמה מוחק את chat-message--file-card-transfer | HYPER CORE TECH
+    let content = bubble.querySelector('.chat-message__content');
+    if (!content) {
+      content = doc.createElement('div');
+      content.className = 'chat-message__content';
+      bubble.appendChild(content);
+    } else {
+      content.className = 'chat-message__content';
+    }
+    content.setAttribute('data-chat-message', message.id);
+    content.innerHTML = `
+      <div class="chat-file-upload" data-chat-file-upload="1">
+        <div class="chat-file-bubble">
+          ${buildFileCardIconHtml({ fileIcon, showCancel: false, fileId })}
+          <div class="chat-file-bubble__info">
+            ${buildFileNameLabelHtml(label)}
+            <div class="chat-file-bubble__size">${App.escapeHtml ? App.escapeHtml(sizeLabel) : sizeLabel}</div>
+          </div>
+          ${downloadHtml}
+        </div>
+      </div>
+      ${buildFileCardMetaRowHtml({ nowLabel: timeLabel, statusHtml, message })}
+    `;
+
+    // צד: ⋮ + מחיקה מעל / הורדה מתחת | HYPER CORE TECH
+    ensureChatSideActions(bubble, {
+      isOutgoing,
+      messageId: message.id,
+      downloadHtml: buildChatFileSideDownloadHtml({
+        attachment: a,
+        magnetURI: magnet,
+        blobUrl,
+        fileName: label,
+      }),
+    });
+
+    if (fileId) settledMediaTransferIds.add(fileId);
+    if (magnet) settledMediaTransferIds.add(`mag:${magnet}`);
+    if (fileId) state.transferProgress.delete(fileId);
+    cleanupOrphanLocalFileTransferBubbles(fileId);
+    return true;
+  }
+
+  function settleOutgoingFileTransfer(message) {
+    if (!message || !elements.messagesContainer) return false;
+    // הודעה קולית עם magnet לא הופכת לכרטיס הורדה | HYPER CORE TECH
+    if (isVoiceOrAudioChatMessage(message)) return false;
+    const magnet = extractMessageMagnet(message);
+    const transferId = extractMessageTorrentTransferId(message);
+    const fileId = message?.attachment?.fileId || transferId;
+    const isFile =
+      !!magnet ||
+      (message.attachment &&
+        typeof App.isGenericFileAttachment === 'function' &&
+        App.isGenericFileAttachment(message.attachment)) ||
+      /\.(zip|rar|7z|tar|gz|pdf|docx?|xlsx?|txt|log|csv|rtf)$/i.test(message?.attachment?.name || '');
+    if (!isFile) return false;
+
+    const settleKey = fileId || (magnet ? `mag:${magnet}` : '');
+    let bubble =
+      findFileCardTransferBubble({ fileId, magnetURI: magnet, transferId }) ||
+      (fileId ? findOrClaimTransferBubble(fileId) : null);
+    // אין בועת העברה (שולח בלבד) — בונים כרטיס מיידי מההודעה | HYPER CORE TECH
+    const isOutgoingMsg =
+      message.direction === 'outgoing' || message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+    if (!bubble && isOutgoingMsg) {
+      const a = message.attachment || {};
+      const label = a.name || 'קובץ מצורף';
+      const sizeLabel = formatTransferSize(a.size);
+      const fileIcon = getTransferFileIcon(label);
+      const nowLabel = formatMessageTime(message.createdAt || Math.floor(Date.now() / 1000));
+      bubble = doc.createElement('div');
+      bubble.className = 'chat-message chat-message--outgoing chat-message--file-card-transfer';
+      if (fileId) bubble.setAttribute('data-transfer-id', fileId);
+      bubble.innerHTML = `
+        <div class="chat-message__content">
+          <div class="chat-file-upload" data-chat-file-upload="1">
+            <div class="chat-file-bubble">
+              ${buildFileCardIconHtml({ fileIcon, showCancel: false, fileId })}
+              <div class="chat-file-bubble__info">
+                ${buildFileNameLabelHtml(label)}
+                <div class="chat-file-bubble__size">${sizeLabel || ''}</div>
+              </div>
+              ${buildFileCardProgressSlotHtml(100)}
+            </div>
+          </div>
+          ${buildFileCardMetaRowHtml({ nowLabel, statusHtml: '' })}
+        </div>
+      `;
+      elements.messagesContainer.appendChild(bubble);
+      stickChatToBottomIfPinned({ force: true });
+    }
+    if (!bubble) return false;
+
+    if (settleKey && settledMediaTransferIds.has(settleKey) && bubble.getAttribute('data-message-id') === String(message.id)) {
+      updateMessageStatus(message.id, message.status || 'sent');
+      return true;
+    }
+    return settleFileCardBubble(bubble, message);
+  }
+
+  function adoptChatTransferBubble(oldFileId, newFileId) {
+    if (!oldFileId || !newFileId || oldFileId === newFileId || !elements.messagesContainer) return false;
+    const bubble = elements.messagesContainer.querySelector(`[data-transfer-id="${oldFileId}"]`);
+    if (!bubble || bubble.getAttribute('data-message-id')) return false;
+
+    bubble.setAttribute('data-transfer-id', newFileId);
+    bubble.querySelectorAll('[data-cancel-transfer]').forEach((btn) => {
+      btn.setAttribute('data-cancel-transfer', newFileId);
+    });
+
+    const prevProgress = state.transferProgress.get(oldFileId);
+    if (prevProgress) {
+      state.transferProgress.delete(oldFileId);
+      state.transferProgress.set(newFileId, { ...prevProgress, fileId: newFileId });
+    }
+    const prevPreview = transferMediaPreviews.get(oldFileId);
+    if (prevPreview) {
+      transferMediaPreviews.delete(oldFileId);
+      const existingPreview = transferMediaPreviews.get(newFileId);
+      transferMediaPreviews.set(newFileId, {
+        url: existingPreview?.url || prevPreview.url || '',
+        mime: existingPreview?.mime || prevPreview.mime || '',
+        name: existingPreview?.name || prevPreview.name || '',
+        size: existingPreview?.size || prevPreview.size || 0,
+        posterDataUrl: existingPreview?.posterDataUrl || prevPreview.posterDataUrl || '',
+      });
+    }
+    const prevCaption = transferCaptions.get(oldFileId);
+    if (prevCaption) {
+      transferCaptions.delete(oldFileId);
+      if (!transferCaptions.has(newFileId)) transferCaptions.set(newFileId, prevCaption);
+    }
+    cleanupOrphanLocalFileTransferBubbles(newFileId);
+    return true;
+  }
+
+  function cleanupOrphanCompressTransferBubbles(keepFileId = null) {
+    if (!elements.messagesContainer) return;
+    elements.messagesContainer.querySelectorAll('[data-transfer-id^="compress-"]').forEach((el) => {
+      const id = el.getAttribute('data-transfer-id');
+      if (keepFileId && id === keepFileId) return;
+      if (el.getAttribute('data-message-id') || el.getAttribute('data-p2p-file-id')) return;
+      el.remove();
+      if (id) {
+        state.transferProgress.delete(id);
+        transferMediaPreviews.delete(id);
+      }
+    });
+  }
+
+  // מוחק בועות local-file כפולות בלי message-id (אחרי אימוץ ל-fileId אמיתי) | HYPER CORE TECH
+  function cleanupOrphanLocalFileTransferBubbles(keepFileId = null) {
+    if (!elements.messagesContainer) return;
+    const settlingRealId = !!(keepFileId && !String(keepFileId).startsWith('local-file-'));
+    elements.messagesContainer.querySelectorAll('[data-transfer-id^="local-file-"]').forEach((el) => {
+      if (el.getAttribute('data-message-id') || el.getAttribute('data-p2p-file-id')) return;
+      const id = el.getAttribute('data-transfer-id') || '';
+      if (keepFileId && id === keepFileId) return;
+      // עדיין בהעברה פעילה — לא למחוק, אלא אם כבר יש כרטיס settled עם id אמיתי | HYPER CORE TECH
+      if (id && state.transferProgress.has(id) && !settlingRealId) return;
+      el.remove();
+      if (id) {
+        state.transferProgress.delete(id);
+        transferMediaPreviews.delete(id);
+        transferCaptions.delete(id);
+      }
+    });
+    if (keepFileId) {
+      const nodes = Array.from(elements.messagesContainer.querySelectorAll(`[data-transfer-id="${keepFileId}"]`));
+      nodes.forEach((el, idx) => {
+        if (idx === 0) return;
+        if (el.getAttribute('data-message-id')) return;
+        el.remove();
+      });
+    }
+  }
+
+  function findOrClaimTransferBubble(fileId, opts = {}) {
+    if (!fileId || !elements.messagesContainer) return null;
+    const forMedia = !!opts.forMedia;
+    const existing = elements.messagesContainer.querySelector(`[data-transfer-id="${fileId}"]`);
+    if (existing) {
+      // מדיה לעולם לא גונבת כרטיס מסמך settled/פעיל | HYPER CORE TECH
+      if (
+        forMedia &&
+        (existing.classList.contains('chat-message--file-card-transfer') ||
+          existing.classList.contains('chat-message--file-card-settled') ||
+          (existing.querySelector('.chat-file-upload') && !existing.querySelector('.chat-media-upload')))
+      ) {
+        return null;
+      }
+      return existing;
+    }
+
+    // מאמצים בועת דחיסה / local-file / local-image פתוחה במקום ליצור בועה שנייה | HYPER CORE TECH
+    const claimSelectors = [
+      '[data-transfer-id^="compress-"]',
+      '[data-transfer-id^="local-file-"]',
+      '[data-transfer-id^="local-image-"]',
+    ];
+    for (const sel of claimSelectors) {
+      const claimBubbles = elements.messagesContainer.querySelectorAll(sel);
+      for (const el of claimBubbles) {
+        if (el.getAttribute('data-message-id') || el.getAttribute('data-p2p-file-id')) continue;
+        if (el.classList.contains('chat-message--file-card-settled')) continue;
+        if (forMedia) {
+          // למדיה: רק בועת מדיה / compress / local-image בלי כרטיס קובץ | HYPER CORE TECH
+          if (el.classList.contains('chat-message--file-card-transfer')) continue;
+          if (el.querySelector('.chat-file-upload') && !el.querySelector('.chat-media-upload')) continue;
+          const claimId = String(el.getAttribute('data-transfer-id') || '');
+          if (
+            !el.querySelector('.chat-media-upload') &&
+            !claimId.startsWith('compress-') &&
+            !claimId.startsWith('local-image-')
+          ) {
+            continue;
+          }
+        } else if (!el.querySelector('.chat-file-upload, .chat-media-upload')) {
+          continue;
+        }
+        const oldId = el.getAttribute('data-transfer-id');
+        if (adoptChatTransferBubble(oldId, fileId)) {
+          cleanupOrphanCompressTransferBubbles(fileId);
+          cleanupOrphanLocalFileTransferBubbles(fileId);
+          return el;
+        }
+      }
+    }
+    return null;
+  }
+
+  App.adoptChatTransferBubble = adoptChatTransferBubble;
+  App.cleanupOrphanCompressTransferBubbles = cleanupOrphanCompressTransferBubbles;
+
+  // בועת קובץ מיידית אצל השולח (TXT/LOG/PDF…) — לא מחכים לאירוע progress | HYPER CORE TECH
+  function ensureOutgoingFileCardTransferBubble(opts = {}) {
+    if (!elements.messagesContainer) return null;
+    const fileId = String(opts.fileId || '').trim();
+    if (!fileId) return null;
+    if (settledMediaTransferIds.has(fileId)) {
+      return elements.messagesContainer.querySelector(`[data-transfer-id="${fileId}"]`);
+    }
+    const peer = String(opts.peerPubkey || state.activeContact || '').toLowerCase();
+    const active = String(state.activeContact || '').toLowerCase();
+    if (peer && active && peer !== active) return null;
+
+    // מאמצים בועה קיימת (local-file / אותו id) — מונע כרטיס כפול | HYPER CORE TECH
+    const claimed = findOrClaimTransferBubble(fileId);
+    const existing = claimed || elements.messagesContainer.querySelector(`[data-transfer-id="${fileId}"]`);
+    const evt = {
+      fileId,
+      name: opts.name || existing?.querySelector?.('.chat-file-bubble__name')?.getAttribute?.('data-full-name') || existing?.querySelector?.('.chat-file-bubble__name')?.textContent || 'קובץ מצורף',
+      size: typeof opts.size === 'number' ? opts.size : 0,
+      mimeType: opts.mimeType || opts.type || '',
+      peerPubkey: peer || active,
+      direction: 'send',
+      status: opts.status || 'starting',
+      progress: typeof opts.progress === 'number' ? opts.progress : 0,
+      isFileCard: true,
+      caption: opts.caption || undefined,
+      blobUrl: opts.blobUrl || undefined,
+    };
+    state.transferProgress.set(fileId, evt);
+    renderTransferProgress(evt);
+    cleanupOrphanLocalFileTransferBubbles(fileId);
+    return elements.messagesContainer.querySelector(`[data-transfer-id="${fileId}"]`);
+  }
+  App.ensureOutgoingFileCardTransferBubble = ensureOutgoingFileCardTransferBubble;
+
+  function forceRenderActiveChatMessages() {
+    const peer = state.activeContact;
+    if (!peer || !elements.messagesContainer) return;
+    try {
+      renderMessages(peer, { force: true });
+    } catch (_) {}
+  }
+  App.forceRenderActiveChatMessages = forceRenderActiveChatMessages;
+
+  function scheduleTransferBubbleCleanup(bubble, progress, ui) {
+    // מדיה/קובץ יוצאים או כרטיס קובץ — נשארים כהודעה (settle), בלי מחיקה שגורמת לקפיצה | HYPER CORE TECH
+    if (ui.isTerminalOk && (isOutgoingMediaTransfer(progress) || isFileCardTransfer(progress))) {
+      state.transferProgress.delete(progress.fileId);
+      return;
+    }
+    if (ui.isTerminalOk) {
+      setTimeout(() => {
+        if (bubble.isConnected && !bubble.getAttribute('data-message-id')) bubble.remove();
+        state.transferProgress.delete(progress.fileId);
+        transferMediaPreviews.delete(progress.fileId);
+      }, 900);
+    } else if (ui.st === 'cancelled') {
+      setTimeout(() => {
+        // לעולם לא מוחקים כרטיס הודעה settled | HYPER CORE TECH
+        if (bubble.isConnected && !bubble.getAttribute('data-message-id')) bubble.remove();
+        state.transferProgress.delete(progress.fileId);
+        transferMediaPreviews.delete(progress.fileId);
+        settledMediaTransferIds.delete(progress.fileId);
+      }, 700);
+    } else if (ui.st === 'failed') {
+      setTimeout(() => {
+        state.transferProgress.delete(progress.fileId);
+      }, 8000);
+    }
+  }
+
+  function buildFileCardDownloadButtonHtml(progress, ui) {
+    const name = progress.name || 'קובץ';
+    const safeName = App.escapeHtml ? App.escapeHtml(name) : name;
+    const magnet = String(progress.magnetURI || '').trim();
+    const blobUrl =
+      progress.blobUrl ||
+      (magnet && typeof App.getTorrentBlob === 'function' ? App.getTorrentBlob(magnet)?.url : '') ||
+      '';
+    if (ui.isTerminalOk && blobUrl) {
+      const safeUrl = App.escapeHtml ? App.escapeHtml(blobUrl) : blobUrl.replace(/"/g, '&quot;');
+      return `<button type="button" class="chat-file-bubble__download" data-download-url="${safeUrl}" data-filename="${safeName}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+    }
+    if (ui.isTerminalOk && magnet) {
+      const safeMagnet = App.escapeHtml ? App.escapeHtml(magnet) : magnet.replace(/"/g, '&quot;');
+      return `<button type="button" class="chat-file-bubble__download torrent-bubble__download-btn" data-magnet="${safeMagnet}" data-filename="${safeName}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+    }
+    // אחרי סיום — בלי מד; אייקון הקובץ מספיק (במיוחד אצל השולח) | HYPER CORE TECH
+    if (ui.isTerminalOk || ui.isTerminalFail) {
+      return '';
+    }
+    // בזמן העברה — מד עגול ברור במקום כפתור הורדה (סגנון וואטסאפ) | HYPER CORE TECH
+    return buildFileCardProgressSlotHtml(ui.pct);
+  }
+
+  // מד התקדמות בצד הכרטיס — שם הקובץ נשאר קריא | HYPER CORE TECH
+  function buildFileCardProgressSlotHtml(pct) {
+    const safePct = Math.max(0, Math.min(100, Math.round(pct || 0)));
+    return `
+      <div class="chat-file-bubble__progress" aria-label="התקדמות ${safePct}%">
+        <div class="chat-media-upload__center chat-file-bubble__progress-center" aria-hidden="true">
+          <div class="chat-media-upload__spinner"></div>
+          ${buildMediaUploadSpinnerFillHtml(safePct)}
+          ${buildMediaUploadPctHtml(safePct)}
+        </div>
+      </div>
+    `;
+  }
+
+  // אייקון קובץ — בזמן שליחה: X עדין מעל האייקון לביטול | HYPER CORE TECH
+  function buildFileCardIconHtml({ fileIcon, iconClass, showCancel, fileId }) {
+    const cls = iconClass || `fa-solid ${fileIcon || 'fa-file'}`;
+    if (showCancel && fileId) {
+      return `
+        <button type="button" class="chat-file-bubble__icon chat-file-bubble__icon--cancel" data-cancel-transfer="${fileId}" title="בטל שליחה" aria-label="בטל שליחה">
+          <i class="${cls}" aria-hidden="true"></i>
+          <span class="chat-file-bubble__icon-x" aria-hidden="true"><i class="fa-solid fa-xmark"></i></span>
+        </button>
+      `;
+    }
+    return `<div class="chat-file-bubble__icon"><i class="${cls}" aria-hidden="true"></i></div>`;
+  }
+
+  function buildFileCardMetaRowHtml({ nowLabel, statusHtml, message }) {
+    const lampHtml = message ? buildMessageTransportIndicatorHtml(message) : '';
+    return `
+      <div class="chat-message__meta-row chat-file-card__meta">
+        ${lampHtml}
+        <span class="chat-message__time">${nowLabel}</span>
+        ${statusHtml ? `<span class="chat-message__status-slot">${statusHtml}</span>` : ''}
+      </div>
+    `;
+  }
+
+  function renderFileCardTransferProgress(progress, existing) {
+    const settleKey = progress.fileId || (progress.magnetURI ? `mag:${progress.magnetURI}` : '');
+    if (settleKey && settledMediaTransferIds.has(settleKey)) {
+      // אם הכרטיס נעלם מה-DOM אחרי renderMessages — לא לחסום יצירה מחדש | HYPER CORE TECH
+      if (fileCardDomExists(null, progress.fileId) || (progress.magnetURI && findFileCardTransferBubble({
+        fileId: progress.fileId,
+        magnetURI: progress.magnetURI,
+        transferId: progress.torrentTransferId,
+      }))) {
+        return;
+      }
+      settledMediaTransferIds.delete(settleKey);
+      if (progress.magnetURI) settledMediaTransferIds.delete(`mag:${progress.magnetURI}`);
+    }
+
+    const ui = resolveTransferAction(progress);
+    const isReceive = progress.direction === 'receive';
+    const directionClass = isReceive ? 'chat-message--incoming' : 'chat-message--outgoing';
+    const label = progress.name || 'קובץ מצורף';
+    const sizeLabel = formatTransferSize(progress.size);
+    const fileIcon = getTransferFileIcon(label);
+    const done = ui.isTerminalOk;
+    const failed = ui.st === 'failed' || ui.st === 'cancelled';
+    const nowLabel = new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    // בלי מד קטן ליד השעה בזמן העברה — רק V בסיום | HYPER CORE TECH
+    const boundId = existing && existing.getAttribute ? existing.getAttribute('data-message-id') : '';
+    const boundMessage = boundId && App.chatState && App.chatState.messageIndex
+      ? (() => {
+          const index = App.chatState.messageIndex.get(boundId);
+          const entry = index ? App.chatState.conversations.get(index.key) : null;
+          return entry && Array.isArray(entry.messages)
+            ? entry.messages.find((item) => item && item.id === boundId)
+            : null;
+        })()
+      : null;
+    const statusHtml = done
+      ? (isReceive
+        ? ''
+        : buildChatMessageStatusHtml((boundMessage && boundMessage.status) || 'sent'))
+      : (failed
+        ? '<i class="fa-solid fa-exclamation-circle chat-media-upload__fail"></i>'
+        : '');
+
+    let bubble =
+      existing ||
+      findFileCardTransferBubble({
+        fileId: progress.fileId,
+        magnetURI: progress.magnetURI,
+        transferId: progress.torrentTransferId,
+      }) ||
+      findOrClaimTransferBubble(progress.fileId) ||
+      findExistingFileMessageBubble(progress);
+    bubble = bubble || doc.createElement('div');
+
+    const iconHtml = buildFileCardIconHtml({
+      fileIcon,
+      showCancel: ui.showCancel,
+      fileId: progress.fileId,
+    });
+
+    if (
+      bubble.isConnected &&
+      bubble.getAttribute('data-message-id') &&
+      !bubble.querySelector('.chat-file-upload') &&
+      bubble.querySelector('.chat-file-bubble, .torrent-bubble')
+    ) {
+      const content = bubble.querySelector('.chat-message__content') || bubble;
+      const name = readFileNameFromBubbleEl(bubble.querySelector('.chat-file-bubble__name, .torrent-bubble__file-name')) || label;
+      const size = bubble.querySelector('.chat-file-bubble__size, .torrent-bubble__file-size')?.textContent || sizeLabel;
+      const iconClass = bubble.querySelector('.chat-file-bubble__icon i:not(.fa-xmark), .torrent-bubble__file-row > i')?.className || `fa-solid ${fileIcon}`;
+      content.innerHTML = `
+        <div class="chat-file-upload" data-chat-file-upload="1">
+          <div class="chat-file-bubble">
+            ${buildFileCardIconHtml({ fileIcon, iconClass, showCancel: ui.showCancel, fileId: progress.fileId })}
+            <div class="chat-file-bubble__info">
+              ${buildFileNameLabelHtml(name)}
+              <div class="chat-file-bubble__size">${App.escapeHtml ? App.escapeHtml(size || '') : (size || '')}</div>
+            </div>
+            ${buildFileCardDownloadButtonHtml(progress, ui)}
+          </div>
+        </div>
+        ${buildFileCardMetaRowHtml({ nowLabel, statusHtml })}
+      `;
+      bubble.classList.add('chat-message--file-card-transfer');
+      if (progress.fileId) bubble.setAttribute('data-transfer-id', progress.fileId);
+      if (progress.magnetURI) bubble.setAttribute('data-magnet-uri', progress.magnetURI);
+    }
+
+    if (bubble.isConnected && bubble.querySelector('.chat-file-upload')) {
+      bubble.className = `chat-message ${directionClass} chat-message--file-card-transfer${done ? ' chat-message--file-card-transfer-done' : ''}${failed ? ' chat-message--file-card-transfer-failed' : ''}${bubble.getAttribute('data-message-id') ? ' chat-message--file-card-settled' : ''}`;
+      if (progress.fileId) bubble.setAttribute('data-transfer-id', progress.fileId);
+      if (progress.torrentTransferId) bubble.setAttribute('data-torrent-transfer', progress.torrentTransferId);
+      if (progress.magnetURI) bubble.setAttribute('data-magnet-uri', progress.magnetURI);
+
+      const hasLegacyOverlay = !!bubble.querySelector('.chat-file-upload > .chat-media-upload__overlay');
+      const hasSideProgress = !!bubble.querySelector('.chat-file-bubble__progress');
+      const hasIconCancel = !!bubble.querySelector('.chat-file-bubble__icon--cancel');
+      const hasMetaCancel = !!bubble.querySelector('.chat-file-card__cancel, .chat-message__meta-row [data-cancel-transfer]');
+      const hasTinyRing = !!bubble.querySelector('.chat-message__status-slot .chat-media-upload__ring');
+      const needsMigrate =
+        hasLegacyOverlay ||
+        (done && hasSideProgress) ||
+        (failed && hasSideProgress) ||
+        (!done && !failed && !hasSideProgress) ||
+        (ui.showCancel && !hasIconCancel) ||
+        hasMetaCancel ||
+        (hasTinyRing && !done && !failed);
+      if (needsMigrate) {
+        const content = bubble.querySelector('.chat-message__content') || bubble;
+        const nameEl = bubble.querySelector('.chat-file-bubble__name');
+        const sizeEl = bubble.querySelector('.chat-file-bubble__size');
+        const iconEl = bubble.querySelector('.chat-file-bubble__icon i:not(.fa-xmark)');
+        const name = readFileNameFromBubbleEl(nameEl) || label;
+        const size = sizeEl?.textContent || sizeLabel;
+        const iconClass = iconEl?.className || `fa-solid ${fileIcon}`;
+        content.innerHTML = `
+          <div class="chat-file-upload" data-chat-file-upload="1">
+            <div class="chat-file-bubble">
+              ${buildFileCardIconHtml({ fileIcon, iconClass, showCancel: ui.showCancel, fileId: progress.fileId })}
+              <div class="chat-file-bubble__info">
+                ${buildFileNameLabelHtml(name)}
+                <div class="chat-file-bubble__size">${App.escapeHtml ? App.escapeHtml(size || '') : (size || '')}</div>
+              </div>
+              ${buildFileCardDownloadButtonHtml(progress, ui)}
+            </div>
+          </div>
+          ${buildFileCardMetaRowHtml({ nowLabel, statusHtml })}
+        `;
+        scheduleTransferBubbleCleanup(bubble, progress, ui);
+        return;
+      }
+
+      const statusHost = bubble.querySelector('.chat-message__status-slot');
+      const progressCenter = bubble.querySelector('.chat-file-bubble__progress-center');
+      const actionHost = bubble.querySelector(
+        '.chat-file-bubble__progress, .chat-file-bubble__download, .chat-file-bubble__download--busy, .torrent-bubble__download-btn'
+      );
+      if (statusHost) {
+        if (statusHtml) statusHost.innerHTML = statusHtml;
+        else statusHost.remove();
+      }
+      if (progressCenter && !done && !failed) {
+        updateMediaUploadCenterProgress(progressCenter, ui.pct);
+      } else if (actionHost) {
+        const html = buildFileCardDownloadButtonHtml(progress, ui);
+        const wrapEl = doc.createElement('div');
+        wrapEl.innerHTML = html.trim();
+        const next = wrapEl.firstElementChild;
+        if (next) actionHost.replaceWith(next);
+      }
+      const iconHost = bubble.querySelector('.chat-file-bubble__icon');
+      if (iconHost) {
+        const iconEl = iconHost.querySelector('i:not(.fa-xmark)');
+        const iconClass = iconEl?.className || `fa-solid ${fileIcon}`;
+        const wrapEl = doc.createElement('div');
+        wrapEl.innerHTML = buildFileCardIconHtml({
+          fileIcon,
+          iconClass,
+          showCancel: ui.showCancel,
+          fileId: progress.fileId,
+        }).trim();
+        const next = wrapEl.firstElementChild;
+        if (next) iconHost.replaceWith(next);
+      }
+      bubble.querySelector('.chat-file-card__cancel')?.remove();
+      bubble.querySelector('.chat-file-upload > .chat-media-upload__overlay')?.remove();
+      bubble.querySelector('.chat-file-upload > .chat-media-upload__cancel')?.remove();
+      scheduleTransferBubbleCleanup(bubble, progress, ui);
+      return;
+    }
+
+    const downloadHtml = buildFileCardDownloadButtonHtml(progress, ui);
+    bubble.className = `chat-message ${directionClass} chat-message--file-card-transfer`;
+    bubble.setAttribute('data-transfer-id', progress.fileId);
+    if (progress.torrentTransferId) bubble.setAttribute('data-torrent-transfer', progress.torrentTransferId);
+    if (progress.magnetURI) bubble.setAttribute('data-magnet-uri', progress.magnetURI);
+
+    bubble.innerHTML = `
+      <div class="chat-message__content">
+        <div class="chat-file-upload" data-chat-file-upload="1">
+          <div class="chat-file-bubble">
+            ${iconHtml}
+            <div class="chat-file-bubble__info">
+              ${buildFileNameLabelHtml(label)}
+              <div class="chat-file-bubble__size">${sizeLabel || ''}</div>
+            </div>
+            ${downloadHtml}
+          </div>
+        </div>
+        ${buildFileCardMetaRowHtml({ nowLabel, statusHtml })}
+      </div>
+    `;
+
+    if (!bubble.isConnected) {
+      elements.messagesContainer.appendChild(bubble);
+      stickChatToBottomIfPinned({ force: true });
+    }
+    scheduleTransferBubbleCleanup(bubble, progress, ui);
+  }
+
+  function renderMediaTransferProgress(progress, existing) {
+    if (settledMediaTransferIds.has(progress.fileId)) return;
+    if (existing?.getAttribute?.('data-message-id') || existing?.getAttribute?.('data-p2p-file-id')) {
+      return;
+    }
+    // לעולם לא לדרוס כרטיס מסמך לבועת מדיה | HYPER CORE TECH
+    if (
+      existing &&
+      (existing.classList.contains('chat-message--file-card-transfer') ||
+        existing.classList.contains('chat-message--file-card-settled') ||
+        (existing.querySelector('.chat-file-upload') && !existing.querySelector('.chat-media-upload')))
+    ) {
+      existing = null;
+    }
+    const ui = resolveTransferAction(progress);
+    const preview = resolveTransferPreview(progress);
+    if (progress.previewUrl || preview.url) {
+      registerChatTransferPreview(progress.fileId, {
+        url: progress.previewUrl || preview.url,
+        mime: progress.mimeType || preview.mime,
+        name: progress.name || preview.name,
+        size: progress.size || 0,
+      });
+    }
+    const mediaSrc = (transferMediaPreviews.get(progress.fileId)?.url) || preview.url;
+    const isVideo = preview.isVideo;
+    const directionClass = 'chat-message--outgoing';
+    const bubble = existing || doc.createElement('div');
+    const nowLabel = new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    const done = ui.isTerminalOk;
+    const failed = ui.st === 'failed' || ui.st === 'cancelled';
+    const safeSrc = App.escapeHtml ? App.escapeHtml(mediaSrc) : String(mediaSrc || '');
+    if (progress.caption) setChatTransferCaption(progress.fileId, progress.caption);
+    const captionText = getChatTransferCaption(progress.fileId, progress);
+
+    // עדכון במקום אם כבר יש בועת מדיה | HYPER CORE TECH
+    if (existing && existing.querySelector('.chat-media-upload')) {
+      bubble.className = `chat-message ${directionClass} chat-message--file-transfer chat-message--media-transfer${done ? ' chat-message--media-transfer-done' : ''}${failed ? ' chat-message--media-transfer-failed' : ''}`;
+      const overlay = bubble.querySelector('.chat-media-upload__overlay');
+      const ringHost = bubble.querySelector('.chat-media-upload__ring-slot');
+      const statusEl = bubble.querySelector('.chat-media-upload__status');
+      const mediaEl = bubble.querySelector('.chat-media-upload__media');
+      if (mediaEl && mediaSrc && !mediaEl.getAttribute('src') && !mediaEl.querySelector('source')) {
+        if (isVideo) {
+          mediaEl.innerHTML = `<source src="${safeSrc}">`;
+          try { mediaEl.load(); } catch (_) {}
+        } else {
+          mediaEl.setAttribute('src', mediaSrc);
+        }
+      }
+      if (isVideo) bindMediaUploadVideoReveal(bubble);
+      else if (mediaEl && mediaEl.tagName === 'IMG') bindMediaUploadImageReveal(bubble);
+      if (overlay) {
+        overlay.hidden = done || failed;
+        overlay.setAttribute('aria-hidden', done || failed ? 'true' : 'false');
+        // עדכון מילוי אדום בלבד — הספינר הלבן נשאר וממשיך להסתובב | HYPER CORE TECH
+        let center = overlay.querySelector('.chat-media-upload__center');
+        if (!center) {
+          const oldSpinner = overlay.querySelector('.chat-media-upload__spinner');
+          center = doc.createElement('div');
+          center.className = 'chat-media-upload__center';
+          center.setAttribute('aria-hidden', 'true');
+          if (oldSpinner) center.appendChild(oldSpinner);
+          else {
+            const spinner = doc.createElement('div');
+            spinner.className = 'chat-media-upload__spinner';
+            spinner.setAttribute('aria-hidden', 'true');
+            center.appendChild(spinner);
+          }
+          overlay.appendChild(center);
+        }
+        if (!done && !failed) updateMediaUploadCenterProgress(center, ui.pct);
+      }
+      if (ringHost) {
+        ringHost.innerHTML = done
+          ? '<i class="fa-solid fa-check-double chat-media-upload__checks"></i>'
+          : (failed ? '<i class="fa-solid fa-exclamation-circle chat-media-upload__fail"></i>' : buildMediaUploadRingHtml(ui.pct));
+      }
+      if (statusEl) {
+        statusEl.textContent = done ? '' : (failed ? (ui.actionText || '') : '');
+        statusEl.hidden = !failed;
+      }
+      let cancelBtn = bubble.querySelector('[data-cancel-transfer]');
+      if (!ui.showCancel && cancelBtn) cancelBtn.remove();
+      else if (ui.showCancel && !cancelBtn) {
+        cancelBtn = doc.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'chat-media-upload__cancel';
+        cancelBtn.setAttribute('data-cancel-transfer', progress.fileId);
+        cancelBtn.title = 'בטל';
+        cancelBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+        bubble.querySelector('.chat-media-upload')?.appendChild(cancelBtn);
+      }
+      ensureTransferCaptionEl(bubble.querySelector('.chat-message__content'), captionText);
+      scheduleTransferBubbleCleanup(bubble, progress, ui);
+      return;
+    }
+
+    const androidPlaceholder = needsAndroidVideoPlaceholder();
+    const readyPoster = progress.fileId ? (App.getChatTransferPreviewPoster?.(progress.fileId) || '') : '';
+    const mediaHtml = isVideo
+      ? (androidPlaceholder
+        ? `<video class="chat-media-upload__media" preload="auto" muted playsinline webkit-playsinline poster="${MEDIA_UPLOAD_BLACK_POSTER}" style="opacity:0;visibility:hidden;background:#000"${mediaSrc ? ` src="${safeSrc}"` : ''}></video>`
+        : `<video class="chat-media-upload__media" preload="auto" muted playsinline webkit-playsinline${readyPoster ? ` poster="${readyPoster}"` : ''} style="opacity:1;visibility:visible;background:#000"${mediaSrc ? ` src="${safeSrc}"` : ''}></video>`)
+      : `<img class="chat-media-upload__media" alt=""${mediaSrc ? ` src="${safeSrc}"` : ''} decoding="async">`;
+    const captionHtml = buildTransferCaptionHtml(captionText);
+    const captionClass = captionHtml ? ' chat-message__content--media-caption' : '';
+
+    bubble.className = `chat-message ${directionClass} chat-message--file-transfer chat-message--media-transfer`;
+    bubble.setAttribute('data-transfer-id', progress.fileId);
+    if (progress.torrentTransferId) {
+      bubble.setAttribute('data-torrent-transfer', progress.torrentTransferId);
+    }
+    bubble.innerHTML = `
+      <div class="chat-message__content chat-message__content--media-upload${captionClass}">
+        <div class="chat-media-upload${isVideo && androidPlaceholder ? ' chat-media-upload--pending' : ''}" data-chat-media-upload="1">
+          ${mediaHtml}
+          <div class="chat-media-upload__overlay"${done || failed ? ' hidden' : ''}>
+            <div class="chat-media-upload__center" aria-hidden="true">
+              <div class="chat-media-upload__spinner"></div>
+              ${buildMediaUploadSpinnerFillHtml(ui.pct)}
+              ${buildMediaUploadPctHtml(ui.pct)}
+            </div>
+          </div>
+          ${ui.showCancel ? `<button type="button" class="chat-media-upload__cancel" data-cancel-transfer="${progress.fileId}" title="בטל"><i class="fa-solid fa-xmark"></i></button>` : ''}
+          <div class="chat-media-upload__footer">
+            <span class="chat-media-upload__time">${nowLabel}</span>
+            <span class="chat-media-upload__ring-slot">
+              ${done
+                ? '<i class="fa-solid fa-check-double chat-media-upload__checks"></i>'
+                : (failed ? '<i class="fa-solid fa-exclamation-circle chat-media-upload__fail"></i>' : buildMediaUploadRingHtml(ui.pct))}
+            </span>
+          </div>
+          <span class="chat-media-upload__status" ${failed ? '' : 'hidden'}>${failed ? (ui.actionText || '') : ''}</span>
+        </div>
+        ${captionHtml}
+      </div>
+    `;
+
+    if (!existing) {
+      elements.messagesContainer.appendChild(bubble);
+      stickChatToBottomIfPinned({ force: true });
+    }
+    if (isVideo) bindMediaUploadVideoReveal(bubble);
+    else if (!isVideo && preview.isImage) bindMediaUploadImageReveal(bubble);
+    scheduleTransferBubbleCleanup(bubble, progress, ui);
+  }
+
+  function bindMediaUploadImageReveal(bubble) {
+    const wrap = bubble?.querySelector?.('.chat-media-upload');
+    const mediaEl = bubble?.querySelector?.('img.chat-media-upload__media');
+    if (!wrap || !mediaEl || mediaEl.dataset.revealBound === '1') return;
+    mediaEl.dataset.revealBound = '1';
+    const reveal = () => {
+      const w = mediaEl.naturalWidth;
+      const h = mediaEl.naturalHeight;
+      if (!w || !h) return;
+      sizeMediaUploadWrap(wrap, w, h);
+      wrap.dataset.mediaReady = '1';
+      wrap.classList.remove('chat-media-upload--pending');
+    };
+    mediaEl.addEventListener('load', reveal);
+    if (mediaEl.complete && mediaEl.naturalWidth) reveal();
+  }
+
+  // חלק בועת התקדמות העברה (chat-ui.js) – בועת הודעה בסגנון וואטסאפ עם פס התקדמות + ביטול | HYPER CORE TECH
+  function resolveTransferAction(progress) {
+    const isReceive = progress.direction === 'receive';
+    const pct = Math.max(0, Math.min(100, Math.round((progress.progress || 0) * 100)));
+    const st = progress.status;
+    const isTerminalFail = st === 'failed' || st === 'cancelled';
+    const isTerminalOk = st === 'complete' || st === 'complete-blossom' || st === 'complete-torrent' || st === 'verified';
+
+    let actionText = isReceive ? 'מוריד...' : 'מעלה...';
+    let actionIcon = isReceive ? 'fa-cloud-arrow-down' : 'fa-cloud-arrow-up';
+    let speedText = `${pct}%`;
+    let showProgress = true;
+    let showCancel = !isReceive && !isTerminalOk && !isTerminalFail;
+
+    if (st === 'complete' || st === 'complete-blossom' || st === 'verified') {
+      actionText = isReceive ? 'התקבל ✓' : 'נשלח ✓';
+      actionIcon = 'fa-check';
+      showProgress = false;
+      showCancel = false;
+    } else if (st === 'complete-torrent') {
+      actionText = progress.messageSent ? 'נשלח ✓' : 'נשלח';
+      actionIcon = 'fa-check';
+      showProgress = false;
+      showCancel = false;
+    } else if (st === 'sent-no-confirm') {
+      actionText = 'נשלח';
+      actionIcon = 'fa-check';
+      showProgress = false;
+      showCancel = false;
+    } else if (st === 'waiting' || st === 'waiting-peer') {
+      actionText = isReceive ? 'מוריד...' : 'ממתין לצד השני...';
+      actionIcon = isReceive ? 'fa-cloud-arrow-down' : 'fa-hourglass-half';
+      speedText = 'ממתין לחיבור...';
+    } else if (st === 'reconnecting') {
+      actionText = isReceive ? 'מוריד...' : 'מתחבר מחדש...';
+      actionIcon = 'fa-rotate';
+      speedText = 'ממתין לחיבור...';
+    } else if (st === 'starting') {
+      actionText = isReceive ? 'מתחיל הורדה...' : 'מתחיל שליחה...';
+      actionIcon = 'fa-spinner fa-spin';
+      speedText = 'מכין...';
+    } else if (st === 'compressing') {
+      actionText = 'דוחס וידאו...';
+      actionIcon = 'fa-film';
+      speedText = `${pct}%`;
+      showCancel = false;
+    } else if (st === 'seeding-torrent') {
+      const attempt = progress.attempt || 1;
+      const max = progress.maxRetries || 3;
+      actionText = max > 1 ? `מנסה שוב (${attempt}/${max})` : 'מתחיל שליחה...';
+      actionIcon = 'fa-share-nodes';
+      speedText = 'ממתין לצד השני...';
+    } else if (st === 'retrying-torrent') {
+      const attempt = progress.attempt || 1;
+      const max = progress.maxRetries || 3;
+      actionText = `מנסה שוב (${Math.min(attempt + 1, max)}/${max})`;
+      actionIcon = 'fa-rotate-right';
+      speedText = 'ממתין...';
+    } else if (st === 'uploading-blossom') {
+      actionText = 'מעלה...';
+      speedText = `${pct}%`;
+    } else if (st === 'receiving' || st === 'requesting-resend' || st === 'stalled-requesting-resend') {
+      // סטטוס יציב — בלי להחליף ל"ממתין להמשך" שגורם לקפיצות
+      actionText = 'מוריד...';
+      actionIcon = 'fa-cloud-arrow-down';
+      speedText = (st === 'receiving') ? `${pct}%` : (pct > 0 ? `${pct}% · ממתין...` : 'ממתין...');
+    } else if (st === 'resending') {
+      actionText = 'מנסה שוב...';
+      speedText = `${pct}%`;
+    } else if (st === 'cancelled') {
+      actionText = 'בוטל';
+      actionIcon = 'fa-xmark';
+      showProgress = false;
+      showCancel = false;
+    } else if (st === 'failed') {
+      const softWait = /offline|peer|connect|timeout|not ready|dc|webtorrent|magnet/i.test(String(progress.error || ''));
+      actionText = softWait ? 'ממתין לצד השני...' : (isReceive ? 'ההורדה נכשלה' : 'השליחה נכשלה');
+      actionIcon = softWait ? 'fa-hourglass-half' : 'fa-triangle-exclamation';
+      speedText = softWait ? 'ניתן לנסות שוב' : (progress.error ? String(progress.error).slice(0, 40) : '');
+      showProgress = false;
+      showCancel = false;
+    } else if (isReceive) {
+      actionText = 'מוריד...';
+      actionIcon = 'fa-cloud-arrow-down';
+      speedText = `${pct}%`;
+    } else {
+      actionText = pct <= 0 ? 'מתחיל שליחה...' : 'מעלה...';
+      speedText = `${pct}%`;
+    }
+
+    return { actionText, actionIcon, speedText, showProgress, showCancel, pct, isTerminalOk, isTerminalFail, st };
+  }
+
+  function removeIncomingTransferProgressBubble(progress) {
+    if (!elements.messagesContainer || !progress) return;
+    const ids = [progress.fileId, progress.torrentTransferId].filter(Boolean);
+    ids.forEach((id) => {
+      elements.messagesContainer.querySelectorAll(`[data-transfer-id="${id}"], [data-torrent-transfer="${id}"]`).forEach((el) => {
+        if (el.getAttribute('data-message-id')) return;
+        if (!el.classList.contains('chat-message--incoming')) return;
+        el.remove();
+      });
+    });
+  }
+
+  function refreshChatAfterIncomingTransferReady(progress) {
+    const peer = progress?.peerPubkey || state.activeContact;
+    // מוחקים progress סופי — מונע לולאת renderMessages↔receive-complete | HYPER CORE TECH
+    if (progress?.fileId) {
+      state.transferProgress.delete(progress.fileId);
+    }
+    if (!peer) return;
+    try {
+      const messages = typeof App.getChatMessages === 'function' ? App.getChatMessages(peer) : [];
+      const fileId = String(progress?.fileId || '');
+      const magnet = String(progress?.magnetURI || '').trim();
+      const msg = messages.find((m) => {
+        if (fileId && (m?.attachment?.fileId === fileId || String(m?.id || '').includes(fileId))) return true;
+        if (magnet && extractMessageMagnet(m) === magnet) return true;
+        return false;
+      });
+      if (msg && isVoiceOrAudioChatMessage(msg)) {
+        if (!appendOrUpgradeVoiceMessage(msg)) {
+          renderMessages(peer, { force: true });
+        }
+        ensureUnifiedFileCardsVisible(peer);
+        return;
+      }
+      if (msg && settleOutgoingFileTransfer(msg)) {
+        ensureUnifiedFileCardsVisible(peer);
+        return;
+      }
+      if (msg && messageUsesUnifiedFileCard(msg) && !fileCardDomExists(msg) && elements.messagesContainer) {
+        const item = doc.createElement('div');
+        settleFileCardBubble(item, msg);
+        if (!item.isConnected) elements.messagesContainer.appendChild(item);
+        ensureUnifiedFileCardsVisible(peer);
+        return;
+      }
+      renderMessages(peer, { force: true });
+      ensureUnifiedFileCardsVisible(peer);
+    } catch (_) {
+      try { renderMessages(peer, { force: true }); } catch (__) {}
+    }
+  }
+
+  // מקבל: מסתירים רק תמונה/וידאו עד שיש blob — מסמך/ZIP מוצגים תמיד (כרטיס+הורדה) | HYPER CORE TECH
+  function isIncomingTransferPending(message) {
+    if (!message) return false;
+    const isOutgoing =
+      message.direction === 'outgoing' ||
+      message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+    if (isOutgoing) return false;
+
+    // TXT/ZIP/PDF-as-file-card וכו' — לא מסתירים (מונע צץ-ונעלם אחרי settle) | HYPER CORE TECH
+    if (messageUsesUnifiedFileCard(message)) return false;
+
+    const magnet = extractMessageMagnet(message);
+    const att = message.attachment || null;
+    const src = String(att?.url || att?.dataUrl || '').trim();
+    if (src && !src.startsWith('magnet:')) return false;
+
+    let fileName = String(att?.name || '');
+    if (!fileName && typeof message.content === 'string' && message.content.trim().startsWith('{')) {
+      try {
+        fileName = String(JSON.parse(message.content.trim())?.fileName || '');
+      } catch (_) {}
+    }
+    // קול/אודיו — לא מסתירים כמדיה ממתינה (גם אם שם מסתיים ב־webm) | HYPER CORE TECH
+    if (isVoiceOrAudioChatMessage(message) || /voice|ptt|voicemessage/i.test(fileName)) return false;
+    const isVisualMedia =
+      (att && typeof App.isImageAttachment === 'function' && App.isImageAttachment(att)) ||
+      (att && typeof App.isVideoAttachment === 'function' && App.isVideoAttachment(att)) ||
+      /\.(jpe?g|png|gif|webp|bmp|heic|mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(fileName);
+    // מסמך/ארכיון עם magnet — מציגים כרטיס גם לפני blob | HYPER CORE TECH
+    if (!isVisualMedia) return false;
+
+    if (magnet) {
+      const blob = typeof App.getTorrentBlob === 'function' ? App.getTorrentBlob(magnet) : null;
+      return !(blob && blob.url);
+    }
+
+    if (att?.isTorrent && !src) return true;
+    return false;
+  }
+
+  function renderTransferProgress(progress) {
+    if (!elements.messagesContainer || !progress?.fileId) return;
+
+    // צד מקבל: לא מציגים התקדמות בחלון השיחה (כמו וואטסאפ) | HYPER CORE TECH
+    if (progress.direction === 'receive') {
+      removeIncomingTransferProgressBubble(progress);
+      const done =
+        progress.status === 'complete' ||
+        progress.status === 'complete-torrent' ||
+        progress.status === 'complete-blossom' ||
+        progress.status === 'verified';
+      if (done) {
+        // מוחקים לפני refresh — בלי זה נוצרת לולאת רינדור אינסופית במובייל | HYPER CORE TECH
+        state.transferProgress.delete(progress.fileId);
+        refreshChatAfterIncomingTransferReady(progress);
+      }
+      return;
+    }
+
+    // תמונה/וידאו יוצאים – בועת מדיה כמו וואטסאפ (בלי שם קובץ ופס אחוזים) | HYPER CORE TECH
+    if (isOutgoingMediaTransfer(progress)) {
+      const existingMedia = findOrClaimTransferBubble(progress.fileId, { forMedia: true });
+      renderMediaTransferProgress(progress, existingMedia);
+      return;
+    }
+
+    // ZIP/קבצים – כרטיס סופי + מד עגול (שולח ומקבל) | HYPER CORE TECH
+    if (isFileCardTransfer(progress)) {
+      const existingFile = findOrClaimTransferBubble(progress.fileId);
+      renderFileCardTransferProgress(progress, existingFile);
+      return;
+    }
+
+    const isReceive = progress.direction === 'receive';
+    const directionClass = isReceive ? 'chat-message--incoming' : 'chat-message--outgoing';
+    const existing = findOrClaimTransferBubble(progress.fileId) ||
+      elements.messagesContainer.querySelector(`[data-transfer-id="${progress.fileId}"]`);
+    // אם הייתה בועת מדיה והקובץ לא מזוהה יותר כמדיה – ממשיכים להחליף לבועת קובץ
+    if (existing?.querySelector('.chat-media-upload') && !isOutgoingMediaTransfer(progress)) {
+      existing.remove();
+    }
+    const bubble = elements.messagesContainer.querySelector(`[data-transfer-id="${progress.fileId}"]`) || doc.createElement('div');
+    const label = progress.name || 'קובץ מצורף';
+    const sizeLabel = formatTransferSize(progress.size);
+    const fileIcon = getTransferFileIcon(label);
+    const ui = resolveTransferAction(progress);
+    const isWaiting =
+      progress.status === 'waiting' ||
+      progress.status === 'waiting-peer' ||
+      progress.status === 'reconnecting' ||
+      progress.status === 'starting' ||
+      progress.status === 'compressing' ||
+      progress.status === 'seeding-torrent' ||
+      (progress.status === 'sending' && ui.pct === 0) ||
+      progress.status === 'requesting-resend' ||
+      progress.status === 'stalled-requesting-resend';
+
+    // חלק עדכון במקום (chat-ui.js) – מונע קפיצות DOM ע״י עדכון שדות קיימים במקום innerHTML מלא | HYPER CORE TECH
+    if (bubble.isConnected && bubble.querySelector('.torrent-bubble')) {
+      bubble.className = `chat-message ${directionClass} chat-message--file-transfer chat-message--torrent-transfer${isWaiting ? ' chat-message--torrent-active' : ''}${ui.isTerminalOk ? ' chat-message--torrent-completed' : ''}${ui.st === 'failed' ? ' chat-message--torrent-error' : ''}${ui.st === 'cancelled' ? ' chat-message--torrent-cancelled' : ''}`;
+      if (progress.torrentTransferId) bubble.setAttribute('data-torrent-transfer', progress.torrentTransferId);
+
+      const actionEl = bubble.querySelector('.torrent-bubble__action');
+      const actionIconEl = bubble.querySelector('.torrent-bubble__header > i');
+      const barInner = bubble.querySelector('.torrent-bubble__bar-inner');
+      const percentEl = bubble.querySelector('.torrent-bubble__percent');
+      const speedEl = bubble.querySelector('.torrent-bubble__speed');
+      const progressWrap = bubble.querySelector('.torrent-bubble__progress');
+      let cancelBtn = bubble.querySelector('.torrent-bubble__cancel');
+
+      if (actionEl) actionEl.textContent = ui.actionText;
+      if (actionIconEl) actionIconEl.className = `fa-solid ${ui.actionIcon}`;
+      if (barInner) barInner.style.width = `${ui.pct}%`;
+      if (percentEl) percentEl.textContent = `${ui.pct}%`;
+      if (speedEl) speedEl.textContent = ui.speedText;
+
+      if (progressWrap) {
+        progressWrap.style.display = ui.showProgress ? '' : 'none';
+      }
+      if (!ui.showCancel && cancelBtn) {
+        cancelBtn.remove();
+      } else if (ui.showCancel && !cancelBtn) {
+        cancelBtn = doc.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'torrent-bubble__cancel';
+        cancelBtn.setAttribute('data-cancel-transfer', progress.fileId);
+        cancelBtn.title = 'בטל';
+        cancelBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+        bubble.querySelector('.torrent-bubble')?.appendChild(cancelBtn);
+      }
+
+      scheduleTransferBubbleCleanup(bubble, progress, ui);
+      return;
+    }
+
+    bubble.className = `chat-message ${directionClass} chat-message--file-transfer chat-message--torrent-transfer${isWaiting ? ' chat-message--torrent-active' : ''}${ui.isTerminalOk ? ' chat-message--torrent-completed' : ''}${ui.st === 'failed' ? ' chat-message--torrent-error' : ''}${ui.st === 'cancelled' ? ' chat-message--torrent-cancelled' : ''}`;
+    bubble.setAttribute('data-transfer-id', progress.fileId);
+    if (progress.torrentTransferId) {
+      bubble.setAttribute('data-torrent-transfer', progress.torrentTransferId);
+    }
+
+    const nowLabel = new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    bubble.innerHTML = `
+      <div class="chat-message__content chat-message__content--torrent">
+        <div class="torrent-bubble">
+          <div class="torrent-bubble__header">
+            <i class="fa-solid ${ui.actionIcon}"></i>
+            <span class="torrent-bubble__action">${ui.actionText}</span>
+          </div>
+          <div class="torrent-bubble__file">
+            <div class="torrent-bubble__file-row">
+              <i class="fa-solid ${fileIcon}"></i>
+              <div class="torrent-bubble__file-info">
+                ${buildFileNameLabelHtml(label, { className: 'torrent-bubble__file-name', tag: 'span' })}
+                <span class="torrent-bubble__file-size">${sizeLabel}</span>
+              </div>
+            </div>
+          </div>
+          <div class="torrent-bubble__progress" style="${ui.showProgress ? '' : 'display:none'}">
+            <div class="torrent-bubble__bar">
+              <div class="torrent-bubble__bar-inner" style="width:${ui.pct}%"></div>
+            </div>
+            <div class="torrent-bubble__stats">
+              <span class="torrent-bubble__percent">${ui.pct}%</span>
+              <span class="torrent-bubble__speed">${ui.speedText}</span>
+            </div>
+          </div>
+          ${ui.showCancel ? `<button type="button" class="torrent-bubble__cancel" data-cancel-transfer="${progress.fileId}" title="בטל"><i class="fa-solid fa-xmark"></i></button>` : ''}
+        </div>
+        <div class="chat-message__time">${nowLabel}</div>
+      </div>
+    `;
+
+    if (!bubble.isConnected) {
+      elements.messagesContainer.appendChild(bubble);
+      stickChatToBottomIfPinned({ force: true });
+    }
+
+    scheduleTransferBubbleCleanup(bubble, progress, ui);
+  }
+
+  function subscribeTransferProgress() {
+    if (typeof App.subscribeP2PFileProgress === 'function') {
+      App.subscribeP2PFileProgress((evt) => {
+        const activePeer = (state.activeContact || '').toLowerCase();
+        const evtPeer = String(evt?.peerPubkey || '').toLowerCase();
+        if (evtPeer && activePeer && evtPeer !== activePeer) return;
+        if (evt?.previewUrl || evt?.mimeType) {
+          registerChatTransferPreview(evt.fileId, {
+            url: evt.previewUrl || '',
+            mime: evt.mimeType || '',
+            name: evt.name || '',
+            size: evt.size || 0,
+          });
+        }
+        if (evt?.fileId && evt?.direction !== 'receive') {
+          const mime = String(evt?.mimeType || '').toLowerCase();
+          const isVisual =
+            mime.startsWith('image/') ||
+            mime.startsWith('video/') ||
+            mime.startsWith('audio/') ||
+            /\.(jpe?g|png|gif|webp|bmp|heic|mp4|m4v|mov|webm|mkv|avi|3gp|mp3|m4a|ogg|wav|flac)$/i.test(
+              String(evt?.name || '')
+            );
+          if (!isVisual) evt.isFileCard = true;
+        }
+        state.transferProgress.set(evt.fileId, evt);
+        renderTransferProgress(evt);
+      });
+    }
+    // פונקציית callback לשימוש ב-chat-file-transfer-ui בעת שליחה | HYPER CORE TECH
+    App.handleP2PProgressUpdate = (evt) => {
+      const activePeer = (state.activeContact || '').toLowerCase();
+      const evtPeer = String(evt?.peerPubkey || '').toLowerCase();
+      // שליחה מהשיחה הפתוחה — גם אם peerPubkey חסר באירוע | HYPER CORE TECH
+      if (evtPeer && activePeer && evtPeer !== activePeer) return;
+      if (evt?.previewUrl || evt?.mimeType) {
+        registerChatTransferPreview(evt.fileId, {
+          url: evt.previewUrl || '',
+          mime: evt.mimeType || '',
+          name: evt.name || '',
+          size: evt.size || 0,
+        });
+      }
+      if (evt?.fileId && evt?.direction !== 'receive') {
+        const mime = String(evt?.mimeType || '').toLowerCase();
+        const isVisual =
+          mime.startsWith('image/') ||
+          mime.startsWith('video/') ||
+          mime.startsWith('audio/') ||
+          /\.(jpe?g|png|gif|webp|bmp|heic|mp4|m4v|mov|webm|mkv|avi|3gp|mp3|m4a|ogg|wav|flac)$/i.test(
+            String(evt?.name || '')
+          );
+        if (!isVisual) evt.isFileCard = true;
+      }
+      state.transferProgress.set(evt.fileId, evt);
+      renderTransferProgress(evt);
+    };
+    App.registerChatTransferPreview = registerChatTransferPreview;
+  }
+
+  function handleMessageActions(event) {
+    // סגירת תפריט ⋮ בלחיצה מחוץ אליו | HYPER CORE TECH
+    if (!event.target.closest('.chat-message__more-wrap')) {
+      closeAllChatMessageMenus();
+    }
+
+    // חלק ביטול העברה (chat-ui.js) – X בתוך בועת הקובץ כמו בוואטסאפ | HYPER CORE TECH
+    const cancelBtn = event.target.closest('.torrent-bubble__cancel, [data-cancel-transfer]');
+    if (cancelBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const transferBubble = cancelBtn.closest('[data-transfer-id], [data-torrent-transfer]');
+      const p2pId = cancelBtn.getAttribute('data-cancel-transfer') || transferBubble?.getAttribute('data-transfer-id');
+      const torrentId = transferBubble?.getAttribute('data-torrent-transfer');
+      let cancelled = false;
+      if (p2pId && typeof App.cancelP2PFile === 'function') {
+        cancelled = !!App.cancelP2PFile(p2pId) || cancelled;
+      }
+      if (torrentId && App.torrentTransfer && typeof App.torrentTransfer.cancelTransfer === 'function') {
+        cancelled = !!App.torrentTransfer.cancelTransfer(torrentId) || cancelled;
+      }
+      if (!cancelled && p2pId && App.torrentTransfer && typeof App.torrentTransfer.cancelTransfer === 'function') {
+        App.torrentTransfer.cancelTransfer(p2pId);
+      }
+      if (transferBubble) {
+        const isSettledMsg = !!transferBubble.getAttribute('data-message-id');
+        const action = transferBubble.querySelector('.torrent-bubble__action');
+        if (action) action.textContent = 'בוטל';
+        transferBubble.classList.remove('chat-message--torrent-active');
+        transferBubble.classList.add('chat-message--torrent-cancelled');
+        transferBubble.querySelector('.torrent-bubble__progress')?.remove();
+        cancelBtn.remove();
+        // כרטיס הודעה settled — לא מוחקים מהשיחה | HYPER CORE TECH
+        if (!isSettledMsg) {
+          setTimeout(() => transferBubble.remove(), 800);
+        }
+      }
+      return;
+    }
+
+    // חלק הורדת קובץ/מדיה (chat-ui.js) – עדיפות ל-blob מקומי; magnet רק אם אין קובץ אצלך | HYPER CORE TECH
+    const mediaDownloadBtn = event.target.closest(
+      '.chat-message__media-download, .chat-message__media-download--side'
+    );
+    if (
+      mediaDownloadBtn &&
+      !mediaDownloadBtn.hasAttribute('data-magnet') &&
+      !mediaDownloadBtn.classList.contains('torrent-bubble__download-btn')
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAllChatMessageMenus();
+      if (typeof App.downloadChatMediaFromButton === 'function') {
+        App.downloadChatMediaFromButton(mediaDownloadBtn);
+      } else if (typeof App.downloadChatMedia === 'function') {
+        const url =
+          (typeof App.resolveLiveChatDownloadSrc === 'function'
+            ? App.resolveLiveChatDownloadSrc(mediaDownloadBtn)
+            : '') ||
+          mediaDownloadBtn.getAttribute('data-download-url') ||
+          '';
+        const fileName = mediaDownloadBtn.getAttribute('data-filename') || 'sos-file';
+        if (url) App.downloadChatMedia(url, fileName);
+      }
+      return;
+    }
+
+    const secureDownloadBtn = event.target.closest('[data-chat-secure-download]');
+    if (secureDownloadBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAllChatMessageMenus();
+      const messageId = secureDownloadBtn.getAttribute('data-message-id')
+        || secureDownloadBtn.closest('[data-message-id]')?.getAttribute('data-message-id')
+        || '';
+      if (messageId && typeof App.downloadChatAttachment === 'function') {
+        App.downloadChatAttachment(messageId);
+      }
+      return;
+    }
+
+    const fileDownloadBtn = event.target.closest(
+      '.torrent-bubble__download-btn, .chat-file-bubble__download[data-download-url], .chat-file-bubble__download[data-magnet], .chat-message__media-download--side[data-magnet], .chat-message__media-download--side[data-download-url]'
+    );
+    if (fileDownloadBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const fileName = fileDownloadBtn.getAttribute('data-filename') || 'file';
+      const localUrl = fileDownloadBtn.getAttribute('data-download-url') || '';
+      const magnetURI = fileDownloadBtn.getAttribute('data-magnet') || '';
+      const messageId = fileDownloadBtn.getAttribute('data-message-id')
+        || fileDownloadBtn.closest('[data-message-id]')?.getAttribute('data-message-id')
+        || '';
+      if (messageId && typeof App.downloadChatAttachment === 'function' && !magnetURI) {
+        App.downloadChatAttachment(messageId);
+        return;
+      }
+      const blobFromMagnet =
+        !localUrl && magnetURI && typeof App.getTorrentBlob === 'function'
+          ? App.getTorrentBlob(magnetURI)?.url
+          : '';
+      const saveUrl = localUrl || blobFromMagnet;
+      if (saveUrl && typeof App.downloadChatMedia === 'function') {
+        App.downloadChatMedia(saveUrl, fileName);
+        return;
+      }
+      if (magnetURI && typeof App.downloadTorrentFile === 'function') {
+        if (!fileDownloadBtn.dataset.defaultHtml) {
+          fileDownloadBtn.dataset.defaultHtml = fileDownloadBtn.innerHTML;
+        }
+        fileDownloadBtn.disabled = true;
+        fileDownloadBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        App.downloadTorrentFile(magnetURI, fileName);
+      } else if (magnetURI) {
+        window.open(magnetURI, '_blank');
+      }
+      return;
+    }
+
+    // חלק ניסיון שוב (chat-ui.js) – טיפול בלחיצה על כפתור retry בבועת כשלון הורדה | HYPER CORE TECH
+    const retryBtn = event.target.closest('.torrent-bubble__retry-btn');
+    if (retryBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const magnetURI = retryBtn.getAttribute('data-retry-magnet');
+      const fileName = retryBtn.getAttribute('data-retry-filename') || 'file';
+      if (magnetURI && typeof App.downloadTorrentFile === 'function') {
+        // הסרת בועת הכשלון והתחלת הורדה מחדש
+        const failedBubble = retryBtn.closest('.chat-message--torrent-failed');
+        if (failedBubble) failedBubble.remove();
+        App.downloadTorrentFile(magnetURI, fileName);
+      }
+      return;
+    }
+    
+    const moreTarget = event.target.closest('[data-chat-more]');
+    if (moreTarget) {
+      event.preventDefault();
+      event.stopPropagation();
+      const wrap = moreTarget.closest('.chat-message__more-wrap');
+      if (!wrap) return;
+      const willOpen = !wrap.classList.contains('is-open');
+      closeAllChatMessageMenus(willOpen ? wrap : null);
+      setChatMoreMenusOpen(wrap, willOpen);
+      return;
+    }
+
+    const copyTarget = event.target.closest('[data-chat-copy-url]');
+    if (copyTarget) {
+      event.preventDefault();
+      event.stopPropagation();
+      const url = copyTarget.getAttribute('data-chat-copy-url');
+      if (url && typeof App.copyChatLinkToClipboard === 'function') {
+        App.copyChatLinkToClipboard(url);
+      }
+      closeAllChatMessageMenus();
+      return;
+    }
+
+    const deleteTarget = event.target.closest('[data-chat-delete]');
+    if (!deleteTarget || !state.activeContact) {
+      if (!event.target.closest('.chat-message__more-menu')) {
+        closeAllChatMessageMenus();
+      }
+      return;
+    }
+    closeAllChatMessageMenus();
+    event.preventDefault();
+    const messageId = deleteTarget.getAttribute('data-chat-delete');
+    if (!messageId) {
+      return;
+    }
+    showDeleteConfirmDialog(messageId, state.activeContact);
+  }
+
+  function isOutgoingChatMessage(message) {
+    if (!message) return false;
+    if (message.isSystem || message.direction === 'system' || message.systemKind) return false;
+    if (message.direction === 'outgoing') return true;
+    if (message.direction === 'incoming') return false;
+    const self = (App.publicKey || '').toLowerCase();
+    return !!(message.from && self && String(message.from).toLowerCase() === self);
+  }
+
+  function setConversationClearBusy(busy) {
+    const header = elements.conversationHeader;
+    if (!header) return;
+    header.classList.toggle('is-clearing-chat', !!busy);
+    let spin = header.querySelector('.chat-conversation__clear-spinner');
+    if (busy) {
+      if (!spin) {
+        spin = doc.createElement('span');
+        spin.className = 'chat-conversation__clear-spinner';
+        spin.setAttribute('aria-label', 'מנקה שיחה');
+        spin.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>';
+        const identity = header.querySelector('.chat-conversation__identity');
+        const meta = identity?.querySelector('.chat-conversation__meta');
+        if (meta) meta.insertAdjacentElement('afterend', spin);
+        else if (identity) identity.appendChild(spin);
+        else header.appendChild(spin);
+      }
+    } else if (spin) {
+      spin.remove();
+    }
+    const menuBtn = doc.getElementById('chatConversationMenuBtn');
+    if (menuBtn) menuBtn.disabled = !!busy;
+  }
+
+  // חלק צ'אט (chat-ui.js) – ספינר בשורת הסטטוס: "טוען..." + מד באותה שורה | HYPER CORE TECH
+  function setConversationHistoryLoading(busy, label) {
+    const header = elements.conversationHeader;
+    const status = elements.conversationStatus || header?.querySelector?.('.chat-conversation__status');
+    if (!header || !status) return;
+    header.classList.toggle('is-loading-history', !!busy);
+    const text = (label && String(label).trim()) || 'טוען...';
+    if (busy) {
+      status.classList.add('chat-conversation__status--loading');
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-label', text);
+      status.innerHTML =
+        `<span class="chat-conversation__history-spinner-text">${text}</span>` +
+        `<i class="fa-solid fa-spinner fa-spin chat-conversation__history-spinner-icon" aria-hidden="true"></i>`;
+    } else {
+      status.classList.remove('chat-conversation__status--loading');
+      status.removeAttribute('role');
+      status.removeAttribute('aria-label');
+      status.innerHTML = '';
+      try {
+        if (state.activeContact) updateConversationDCStatus(state.activeContact);
+      } catch (_) {}
+    }
+    // מסירים ספינר ישן אם נשאר מגרסה קודמת | HYPER CORE TECH
+    try {
+      header.querySelectorAll('.chat-conversation__history-spinner').forEach((el) => el.remove());
+    } catch (_) {}
+  }
+
+  function waitMs(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  let clearChatInProgress = false;
+
+  async function clearActiveConversationChat() {
+    const peerPubkey = state.activeContact;
+    if (!peerPubkey || clearChatInProgress) return;
+    clearChatInProgress = true;
+    setConversationClearBusy(true);
+    try {
+      const messages = (typeof App.getChatMessages === 'function' ? App.getChatMessages(peerPubkey) : []) || [];
+      const snapshot = Array.isArray(messages) ? messages.slice() : [];
+      const outgoing = [];
+      const incoming = [];
+      snapshot.forEach((message) => {
+        if (!message?.id) return;
+        if (isOutgoingChatMessage(message)) outgoing.push(message);
+        else incoming.push(message);
+      });
+
+      // הודעות נכנסות – מחיקה מקומית בלבד (בלי קריאה לריליי) | HYPER CORE TECH
+      incoming.forEach((message) => {
+        try { App.removeChatMessage?.(peerPubkey, message.id); } catch (_) {}
+      });
+
+      // הודעות יוצאות – kind 5 אחת־אחת בקצב יציב (כולל מדיה P2P) | HYPER CORE TECH
+      for (let i = 0; i < outgoing.length; i += 1) {
+        const message = outgoing[i];
+        try {
+          if (typeof App.deleteChatMessage === 'function') {
+            await App.deleteChatMessage(peerPubkey, message.id);
+          } else {
+            App.removeChatMessage?.(peerPubkey, message.id);
+          }
+        } catch (err) {
+          console.warn('[CHAT/UI] clear-chat outgoing delete failed', message.id, err);
+          try { App.removeChatMessage?.(peerPubkey, message.id); } catch (_) {}
+        }
+        if (i < outgoing.length - 1) {
+          await waitMs(450);
+        }
+      }
+
+      if (state.activeContact && state.activeContact.toLowerCase() === peerPubkey.toLowerCase()) {
+        try { App.ensureDisappearingIntroNotice?.(peerPubkey); } catch (_) {}
+        renderMessages(peerPubkey, { force: true });
+      }
+      renderContacts(true);
+    } finally {
+      clearChatInProgress = false;
+      setConversationClearBusy(false);
+    }
+  }
+
+  function showClearChatConfirmDialog(peerPubkey) {
+    if (!peerPubkey || clearChatInProgress) return;
+    const existing = doc.getElementById('chatClearDialog');
+    if (existing) existing.remove();
+    const dialog = doc.createElement('div');
+    dialog.id = 'chatClearDialog';
+    dialog.className = 'chat-dialog';
+    dialog.innerHTML = `
+      <div class="chat-dialog__backdrop"></div>
+      <div class="chat-dialog__content" role="dialog" aria-modal="true">
+        <h3 class="chat-dialog__title">ניקוי הצ'ט</h3>
+        <p class="chat-dialog__message">לנקות את כל ההודעות בשיחה? הודעות יוצאות יימחקו גם אצל הצד השני. הודעות נכנסות יימחקו רק מהמכשיר שלך.</p>
+        <div class="chat-dialog__actions">
+          <button type="button" class="chat-dialog__btn chat-dialog__btn--cancel">ביטול</button>
+          <button type="button" class="chat-dialog__btn chat-dialog__btn--confirm">נקה צ'ט</button>
+        </div>
+      </div>
+    `;
+    elements.panel.appendChild(dialog);
+    const backdrop = dialog.querySelector('.chat-dialog__backdrop');
+    const cancel = dialog.querySelector('.chat-dialog__btn--cancel');
+    const confirm = dialog.querySelector('.chat-dialog__btn--confirm');
+    const close = () => dialog.remove();
+    backdrop?.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    cancel?.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    confirm?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+      clearActiveConversationChat();
+    });
+  }
+
+  /* חלק מחיקת שיחה (chat-ui.js) – מוחק הודעות ומסיר את איש הקשר מהרשימה | HYPER CORE TECH */
+  async function deleteActiveConversationChat() {
+    const peerPubkey = state.activeContact;
+    if (!peerPubkey || clearChatInProgress) return;
+    clearChatInProgress = true;
+    setConversationClearBusy(true);
+    try {
+      const messages = (typeof App.getChatMessages === 'function' ? App.getChatMessages(peerPubkey) : []) || [];
+      const snapshot = Array.isArray(messages) ? messages.slice() : [];
+      const outgoing = [];
+      const incoming = [];
+      snapshot.forEach((message) => {
+        if (!message?.id) return;
+        if (isOutgoingChatMessage(message)) outgoing.push(message);
+        else incoming.push(message);
+      });
+
+      incoming.forEach((message) => {
+        try { App.removeChatMessage?.(peerPubkey, message.id); } catch (_) {}
+      });
+
+      for (let i = 0; i < outgoing.length; i += 1) {
+        const message = outgoing[i];
+        try {
+          if (typeof App.deleteChatMessage === 'function') {
+            await App.deleteChatMessage(peerPubkey, message.id);
+          } else {
+            App.removeChatMessage?.(peerPubkey, message.id);
+          }
+        } catch (err) {
+          console.warn('[CHAT/UI] delete-chat outgoing delete failed', message.id, err);
+          try { App.removeChatMessage?.(peerPubkey, message.id); } catch (_) {}
+        }
+        if (i < outgoing.length - 1) {
+          await waitMs(450);
+        }
+      }
+
+      try { App.removeChatContact?.(peerPubkey); } catch (err) {
+        console.warn('[CHAT/UI] removeChatContact failed', err);
+      }
+      resetConversationView();
+      renderContacts(true);
+      try { App.showToast?.('השיחה נמחקה מהרשימה'); } catch (_) {}
+    } finally {
+      clearChatInProgress = false;
+      setConversationClearBusy(false);
+    }
+  }
+
+  function showDeleteChatConfirmDialog(peerPubkey) {
+    if (!peerPubkey || clearChatInProgress) return;
+    const existing = doc.getElementById('chatDeleteChatDialog');
+    if (existing) existing.remove();
+    const dialog = doc.createElement('div');
+    dialog.id = 'chatDeleteChatDialog';
+    dialog.className = 'chat-dialog';
+    dialog.innerHTML = `
+      <div class="chat-dialog__backdrop"></div>
+      <div class="chat-dialog__content" role="dialog" aria-modal="true">
+        <h3 class="chat-dialog__title">מחיקת הצ'ט</h3>
+        <p class="chat-dialog__message">למחוק את כל ההודעות ולהסיר את המשתמש מרשימת השיחות? הודעות יוצאות יימחקו גם אצל הצד השני. הודעות נכנסות יימחקו רק מהמכשיר שלך. המשתמש יוסר מהרשימה עד שיישלח שוב הודעה.</p>
+        <div class="chat-dialog__actions">
+          <button type="button" class="chat-dialog__btn chat-dialog__btn--cancel">ביטול</button>
+          <button type="button" class="chat-dialog__btn chat-dialog__btn--confirm">מחק צ'ט</button>
+        </div>
+      </div>
+    `;
+    elements.panel.appendChild(dialog);
+    const backdrop = dialog.querySelector('.chat-dialog__backdrop');
+    const cancel = dialog.querySelector('.chat-dialog__btn--cancel');
+    const confirm = dialog.querySelector('.chat-dialog__btn--confirm');
+    const close = () => dialog.remove();
+    backdrop?.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    cancel?.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    confirm?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+      deleteActiveConversationChat();
+    });
+  }
+
+  function formatDisappearingTimerLabel(seconds) {
+    if (typeof App.formatDisappearingTimerLabel === 'function') {
+      return App.formatDisappearingTimerLabel(seconds);
+    }
+    const sec = Number(seconds) || 0;
+    if (sec === 0) return 'כבוי';
+    const day = 24 * 60 * 60;
+    if (sec <= day) return '24 שעות';
+    if (sec <= 3 * day) return '72 שעות';
+    if (sec <= 7 * day) return '7 ימים';
+    if (sec <= 14 * day) return '14 יום';
+    if (sec <= 30 * day) return '30 יום';
+    if (sec <= 60 * day) return '60 יום';
+    if (sec <= 90 * day) return '90 ימים';
+    return `${Math.round(sec / day)} ימים`;
+  }
+
+  function isSystemChatMessage(message) {
+    if (typeof App.isSystemChatMessage === 'function') return App.isSystemChatMessage(message);
+    return !!(message && (message.isSystem || message.direction === 'system' || message.systemKind));
+  }
+
+  function buildDisappearingSystemMessageEl(message, peerPubkey) {
+    const peer = (peerPubkey || state.activeContact || '').toLowerCase();
+    const el = doc.createElement('div');
+    el.className = 'chat-system-message chat-system-message--disappearing';
+    el.setAttribute('role', 'status');
+    if (message?.id) el.setAttribute('data-message-id', message.id);
+    const kind = message?.systemKind === 'disappearing-change' ? 'change' : 'intro';
+    const sec = Number(message?.disappearingTimerSec)
+      || (typeof App.getDisappearingTimerSec === 'function' ? App.getDisappearingTimerSec(peer) : 7 * 24 * 60 * 60);
+    const raw = typeof App.buildDisappearingNoticeContent === 'function'
+      ? App.buildDisappearingNoticeContent(sec, kind)
+      : (typeof message?.content === 'string' ? message.content : '');
+    const safe = App.escapeHtml ? App.escapeHtml(raw) : raw;
+    // שומרים "לשינוי הטיימר" יחד בשורה, ו"לחצו כאן" לבד בשורה נפרדת | HYPER CORE TECH
+    const withLink = safe
+      .replace(/לשינוי הטיימר לחצו? כאן\.?$/, 'לשינוי\u00A0הטיימר')
+      .replace(/לחצו? כאן\.?$/, '')
+      .replace(/\s+$/, '');
+    el.innerHTML = `<i class="fa-regular fa-clock" aria-hidden="true"></i><span>${withLink}<br><button type="button" class="chat-system-message__link" data-disappearing-settings>לחצו כאן</button></span>`;
+    el.querySelector('[data-disappearing-settings]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDesktopDisappearingTimerDialog(peer);
+    });
+    return el;
+  }
+
+  function openDisappearingSettings(peerPubkey) {
+    const peer = (peerPubkey || state.activeContact || '').toLowerCase();
+    if (!peer) return;
+    const existing = doc.getElementById('chatDisappearingSheet');
+    if (existing) existing.remove();
+    const current = typeof App.getDisappearingTimerSec === 'function'
+      ? App.getDisappearingTimerSec(peer)
+      : (App.DISAPPEARING_DEFAULT_SEC || 7 * 24 * 60 * 60);
+    const day = 24 * 60 * 60;
+    const options = [
+      { value: day, label: '24 שעות' },
+      { value: 3 * day, label: '72 שעות' },
+      { value: 7 * day, label: '7 ימים' },
+      { value: 14 * day, label: '14 יום' },
+      { value: 30 * day, label: '30 יום' },
+      { value: 60 * day, label: '60 יום' },
+      { value: 90 * day, label: '90 ימים' },
+    ];
+    let selectedIdx = options.findIndex((o) => o.value === current);
+    if (selectedIdx < 0) selectedIdx = 2;
+    const sheet = doc.createElement('div');
+    sheet.id = 'chatDisappearingSheet';
+    sheet.className = 'chat-disappearing-sheet';
+    sheet.setAttribute('role', 'presentation');
+    sheet.innerHTML = `
+      <div class="chat-disappearing-sheet__backdrop"></div>
+      <div class="chat-disappearing-sheet__panel" role="document" aria-labelledby="chatDisappearingTitle">
+        <header class="chat-disappearing-sheet__header">
+          <button type="button" class="chat-disappearing-sheet__close" aria-label="סגור"><i class="fa-solid fa-xmark"></i></button>
+          <h3 id="chatDisappearingTitle" class="chat-disappearing-sheet__title">מחיקת הודעות והגדרות טיימר</h3>
+          <span class="chat-disappearing-sheet__header-spacer" aria-hidden="true"></span>
+        </header>
+        <div class="chat-disappearing-sheet__body">
+          <section class="chat-disappearing-sheet__group chat-disappearing-sheet__clear" aria-label="ניקוי הצ׳ט">
+            <h4 class="chat-disappearing-sheet__section-title">ניקוי הצ׳ט</h4>
+            <div class="chat-disappearing-sheet__card">
+              <p class="chat-disappearing-sheet__section-hint">מוחק את כל ההודעות בשיחה זו מהמכשיר. הודעות ששלחת יימחקו גם אצל הצד השני.</p>
+              <button type="button" class="chat-disappearing-sheet__clear-btn" data-action="clear-chat-now">
+                <i class="fa-solid fa-broom" aria-hidden="true"></i>
+                <span>נקה צ׳ט</span>
+              </button>
+            </div>
+          </section>
+          <section class="chat-disappearing-sheet__group chat-disappearing-sheet__timer" aria-label="טיימר ניקוי">
+            <h4 class="chat-disappearing-sheet__section-title">טיימר ניקוי</h4>
+            <p class="chat-disappearing-sheet__hint">בחר כמה זמן הודעות חדשות יישארו בצ׳אט לפני שיימחקו אוטומטית.</p>
+            <div class="chat-disappearing-sheet__card chat-disappearing-sheet__options" role="radiogroup" aria-label="טיימר ניקוי שיחה">
+              ${options.map((opt) => {
+                const isOn = current === opt.value;
+                return `<label class="chat-disappearing-sheet__option${isOn ? ' is-selected' : ''}">
+                  <span>${opt.label}</span>
+                  <input type="radio" name="disappearingTimer" value="${opt.value}" ${isOn ? 'checked' : ''}>
+                  <span class="chat-disappearing-sheet__radio" aria-hidden="true"></span>
+                </label>`;
+              }).join('')}
+            </div>
+            <div class="chat-disappearing-sheet__roller" data-roller aria-label="בחירת טיימר ברולר">
+              <button type="button" class="chat-disappearing-sheet__roller-btn" data-roller-dir="up" aria-label="למעלה">
+                <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+              </button>
+              <div class="chat-disappearing-sheet__roller-frame">
+                <div class="chat-disappearing-sheet__roller-glow" aria-hidden="true"></div>
+                <div class="chat-disappearing-sheet__roller-viewport">
+                  <div class="chat-disappearing-sheet__roller-track" data-roller-track>
+                    ${options.map((opt, i) => `<div class="chat-disappearing-sheet__roller-item" data-index="${i}" data-value="${opt.value}"><span class="chat-disappearing-sheet__roller-label">${opt.label}</span></div>`).join('')}
+                  </div>
+                </div>
+              </div>
+              <button type="button" class="chat-disappearing-sheet__roller-btn" data-roller-dir="down" aria-label="למטה">
+                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+              </button>
+              <button type="button" class="chat-disappearing-sheet__confirm" data-action="confirm-timer" disabled>אישור</button>
+            </div>
+          </section>
+        </div>
+        <footer class="chat-disappearing-sheet__footer">
+          <button type="button" class="chat-disappearing-sheet__done" data-action="sheet-done">סגור</button>
+        </footer>
+      </div>
+    `;
+    const host = elements.panel || doc.body;
+    host.appendChild(sheet);
+    const close = () => sheet.remove();
+    let appliedValue = current;
+    const applyTimer = (sec, { toast = true, dismiss = false } = {}) => {
+      try {
+        App.setDisappearingTimerSec?.(peer, sec);
+      } catch (_) {}
+      appliedValue = sec;
+      if (toast) {
+        try {
+          App.showToast?.(`ניקוי אוטומטי: ${formatDisappearingTimerLabel(sec)}`);
+        } catch (_) {}
+      }
+      if (dismiss) close();
+    };
+    const rollerRoot = sheet.querySelector('[data-roller]');
+    const rollerTrack = sheet.querySelector('[data-roller-track]');
+    const rollerItems = [...sheet.querySelectorAll('.chat-disappearing-sheet__roller-item')];
+    const confirmBtn = sheet.querySelector('[data-action="confirm-timer"]');
+    const ROW_H = 28;
+    const syncConfirmState = () => {
+      if (!confirmBtn) return;
+      const pending = options[selectedIdx]?.value;
+      confirmBtn.disabled = pending === appliedValue;
+    };
+    const syncRoller = (idx, { animate = true } = {}) => {
+      selectedIdx = Math.max(0, Math.min(options.length - 1, idx));
+      if (rollerTrack) {
+        if (!animate) rollerTrack.style.transition = 'none';
+        rollerTrack.style.transform = `translate3d(0, ${-selectedIdx * ROW_H}px, 0)`;
+        if (!animate) {
+          void rollerTrack.offsetHeight;
+          rollerTrack.style.transition = '';
+        }
+      }
+      rollerItems.forEach((el, i) => {
+        const dist = Math.abs(i - selectedIdx);
+        el.classList.toggle('is-selected', dist === 0);
+        el.classList.toggle('is-near', dist === 1);
+        el.classList.toggle('is-far', dist > 1);
+      });
+      sheet.querySelector('[data-roller-dir="up"]')?.toggleAttribute('disabled', selectedIdx <= 0);
+      sheet.querySelector('[data-roller-dir="down"]')?.toggleAttribute('disabled', selectedIdx >= options.length - 1);
+      syncConfirmState();
+    };
+    const moveRoller = (delta) => {
+      const next = selectedIdx + delta;
+      if (next < 0 || next >= options.length) return;
+      // דסקטופ: רק מזיזים בחירה מקומית – שמירה רק באישור | HYPER CORE TECH
+      syncRoller(next);
+    };
+    if (rollerRoot && rollerTrack) {
+      syncRoller(selectedIdx, { animate: false });
+      sheet.querySelectorAll('[data-roller-dir]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          moveRoller(btn.getAttribute('data-roller-dir') === 'up' ? -1 : 1);
+        });
+      });
+      rollerRoot.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.deltaY > 0) moveRoller(1);
+        else if (e.deltaY < 0) moveRoller(-1);
+      }, { passive: false });
+    }
+    sheet.querySelector('.chat-disappearing-sheet__backdrop')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+    });
+    sheet.querySelector('.chat-disappearing-sheet__close')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+    });
+    sheet.querySelector('[data-action="sheet-done"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+    });
+    confirmBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const sec = options[selectedIdx]?.value;
+      if (sec == null || sec === appliedValue) return;
+      applyTimer(sec, { toast: true, dismiss: true });
+    });
+    sheet.querySelector('[data-action="clear-chat-now"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+      showClearChatConfirmDialog(peer);
+    });
+    sheet.querySelectorAll('input[name="disappearingTimer"]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const sec = Math.max(0, Number(input.value) || 0);
+        applyTimer(sec, { toast: true, dismiss: true });
+      });
+    });
+  }
+
+  function showAutoCleanDialog() {
+    // תאימות לאחור – פותח ישירות אישור ניקוי (לא sheet משולב) | HYPER CORE TECH
+    showClearChatConfirmDialog(state.activeContact);
+  }
+
+  /* חלק טיימר ניקוי (chat-ui.js) – דיאלוג טיימר בלבד (דסקטופ + מובייל) | HYPER CORE TECH */
+  function openDesktopDisappearingTimerDialog(peerPubkey) {
+    const peer = (peerPubkey || state.activeContact || '').toLowerCase();
+    if (!peer) return;
+    const existing = doc.getElementById('chatDesktopTimerDialog');
+    if (existing) existing.remove();
+    const current = typeof App.getDisappearingTimerSec === 'function'
+      ? App.getDisappearingTimerSec(peer)
+      : (App.DISAPPEARING_DEFAULT_SEC || 7 * 24 * 60 * 60);
+    const day = 24 * 60 * 60;
+    const options = [
+      { value: 0, label: 'כבוי' },
+      { value: day, label: '24 שעות' },
+      { value: 3 * day, label: '72 שעות' },
+      { value: 7 * day, label: '7 ימים' },
+      { value: 14 * day, label: '14 יום' },
+      { value: 30 * day, label: '30 יום' },
+      { value: 60 * day, label: '60 יום' },
+      { value: 90 * day, label: '90 ימים' },
+    ];
+    let selected = options.find((o) => o.value === current)?.value;
+    if (selected == null) selected = options[3].value; // 7 ימים
+
+    const dialog = doc.createElement('div');
+    dialog.id = 'chatDesktopTimerDialog';
+    dialog.className = 'chat-desktop-timer-dialog';
+    dialog.setAttribute('role', 'presentation');
+    dialog.innerHTML = `
+      <div class="chat-desktop-timer-dialog__backdrop"></div>
+      <div class="chat-desktop-timer-dialog__panel" role="dialog" aria-modal="true" aria-labelledby="chatDesktopTimerTitle">
+        <header class="chat-desktop-timer-dialog__header">
+          <h3 id="chatDesktopTimerTitle" class="chat-desktop-timer-dialog__title">תיזמון ניקוי אוטומטי</h3>
+          <button type="button" class="chat-desktop-timer-dialog__close" aria-label="סגור"><i class="fa-solid fa-xmark"></i></button>
+        </header>
+        <p class="chat-desktop-timer-dialog__hint">בחר כמה זמן הודעות חדשות יישארו בצ׳אט לפני שיימחקו אוטומטית.</p>
+        <div class="chat-desktop-timer-dialog__options" role="radiogroup" aria-label="טיימר ניקוי">
+          ${options.map((opt) => `
+            <label class="chat-desktop-timer-dialog__option${opt.value === selected ? ' is-selected' : ''}">
+              <input type="radio" name="desktopDisappearingTimer" value="${opt.value}" ${opt.value === selected ? 'checked' : ''}>
+              <span class="chat-desktop-timer-dialog__radio" aria-hidden="true"></span>
+              <span class="chat-desktop-timer-dialog__label">${opt.label}</span>
+            </label>
+          `).join('')}
+        </div>
+        <div class="chat-desktop-timer-dialog__actions">
+          <button type="button" class="chat-desktop-timer-dialog__btn chat-desktop-timer-dialog__btn--cancel" data-action="cancel">ביטול</button>
+          <button type="button" class="chat-desktop-timer-dialog__btn chat-desktop-timer-dialog__btn--confirm" data-action="confirm">אישור</button>
+        </div>
+      </div>
+    `;
+    const host = elements.panel || doc.body;
+    host.appendChild(dialog);
+
+    const close = () => dialog.remove();
+    const syncSelected = () => {
+      dialog.querySelectorAll('.chat-desktop-timer-dialog__option').forEach((el) => {
+        const input = el.querySelector('input');
+        el.classList.toggle('is-selected', !!(input && input.checked));
+      });
+    };
+    dialog.querySelector('.chat-desktop-timer-dialog__backdrop')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+    });
+    dialog.querySelector('.chat-desktop-timer-dialog__close')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+    });
+    dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+    });
+    dialog.querySelectorAll('input[name="desktopDisappearingTimer"]').forEach((input) => {
+      input.addEventListener('change', () => {
+        selected = Math.max(0, Number(input.value) || 0);
+        syncSelected();
+      });
+    });
+    dialog.querySelector('[data-action="confirm"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const checked = dialog.querySelector('input[name="desktopDisappearingTimer"]:checked');
+      const sec = Math.max(0, Number(checked?.value || selected) || 0);
+      try {
+        App.setDisappearingTimerSec?.(peer, sec);
+      } catch (_) {}
+      try {
+        App.showToast?.(`ניקוי אוטומטי: ${formatDisappearingTimerLabel(sec)}`);
+      } catch (_) {}
+      close();
+    });
+  }
+
+  function showDeleteConfirmDialog(messageId, peerPubkey) {
+    const existing = doc.getElementById('chatDeleteDialog');
+    if (existing) existing.remove();
+    const dialog = doc.createElement('div');
+    dialog.id = 'chatDeleteDialog';
+    dialog.className = 'chat-dialog';
+    dialog.innerHTML = `
+      <div class="chat-dialog__backdrop"></div>
+      <div class="chat-dialog__content" role="dialog" aria-modal="true">
+        <h3 class="chat-dialog__title">מחיקת הודעה</h3>
+        <p class="chat-dialog__message">למחוק את ההודעה עבור שני הצדדים? פעולה זו תשלח מחיקה לרשת.</p>
+        <div class="chat-dialog__actions">
+          <button type="button" class="chat-dialog__btn chat-dialog__btn--cancel">ביטול</button>
+          <button type="button" class="chat-dialog__btn chat-dialog__btn--confirm">מחק</button>
+        </div>
+      </div>
+    `;
+    elements.panel.appendChild(dialog);
+    const backdrop = dialog.querySelector('.chat-dialog__backdrop');
+    const cancel = dialog.querySelector('.chat-dialog__btn--cancel');
+    const confirm = dialog.querySelector('.chat-dialog__btn--confirm');
+    const close = () => dialog.remove();
+    // חלק מניעת סגירה (chat-ui.js) – stopPropagation מונע סגירת הצ'אט פאנל בלחיצה על הדיאלוג | HYPER CORE TECH
+    backdrop?.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    cancel?.addEventListener('click', (e) => { e.stopPropagation(); close(); });
+    confirm?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      close();
+      if (typeof App.deleteChatMessage === 'function') {
+        App.deleteChatMessage(peerPubkey, messageId).then(() => {
+          renderMessages(peerPubkey);
+        });
+      } else if (typeof App.removeChatMessage === 'function') {
+        App.removeChatMessage(peerPubkey, messageId);
+        renderMessages(peerPubkey);
+      }
+    });
+  }
+
+  const homeNavButton = doc.querySelector('[data-nav="home"]');
+
+  const elements = {
+    launcher: doc.getElementById('chatLauncher'),
+    launcherButton: doc.getElementById('chatLauncherButton'),
+    launcherBadge: doc.getElementById('chatBadge'),
+    panel: doc.getElementById('chatPanel'),
+    navButton: doc.getElementById('messagesToggle'),
+    badge: doc.getElementById('messagesBadge'),
+    closeButton: doc.getElementById('chatCloseButton'),
+    contactsList: doc.getElementById('chatContactsList'),
+    refreshContacts: doc.getElementById('chatRefreshContacts'),
+    archiveRow: doc.getElementById('chatArchiveRow'),
+    archiveViewBar: doc.getElementById('chatArchiveViewBar'),
+    archiveViewBack: doc.getElementById('chatArchiveViewBack'),
+    contactsAside: doc.querySelector('#chatPanel .chat-contacts'),
+    searchInput: doc.getElementById('chatSearchInput'),
+    backButton: doc.getElementById('chatConversationBack'),
+    emptyState: doc.getElementById('chatEmptyState'),
+    conversationHeader: doc.getElementById('chatConversationHeader'),
+    conversationAvatar: doc.getElementById('chatConversationAvatar'),
+    conversationName: doc.getElementById('chatConversationName'),
+    conversationStatus: doc.getElementById('chatConversationStatus'),
+    messagesContainer: doc.getElementById('chatMessages'),
+    composer: doc.getElementById('chatComposer'),
+    messageInput: doc.getElementById('chatMessageInput'),
+    footer: doc.getElementById('chatPanelFooter'),
+    footerItems: doc.querySelectorAll('#chatPanelFooter .chat-footer__item'),
+    footerNotificationsBadge: doc.getElementById('chatFooterNotificationsBadge'),
+    notificationsSection: doc.getElementById('chatNotifications'),
+    notificationsList: doc.getElementById('chatNotificationsList'),
+    notificationsEmpty: doc.getElementById('chatNotificationsEmpty'),
+    notificationsMarkRead: doc.getElementById('chatNotificationsMarkRead'),
+    notificationsToggle: doc.getElementById('notificationsToggle'),
+    navSidebarItems: doc.querySelectorAll('.chat-nav-item, .chat-nav-profile'),
+    navProfileImg: doc.getElementById('chatNavProfileImg'),
+    torrentSendButton: doc.getElementById('chatTorrentSendButton'),
+  };
+
+  if ((!elements.navButton && !elements.launcherButton) || !elements.panel) {
+    console.warn('Chat UI elements missing');
+    return;
+  }
+
+  const state = {
+    isOpen: false,
+    activeContact: null,
+    contactsView: 'main', // 'main' | 'archive' – אותו עיצוב רשימה, תוכן מסונן | HYPER CORE TECH
+    filterText: '',
+    footerMode: 'contacts',
+    panelMode: 'list',
+    notifications: [],
+    // חלק צ'אט (chat-ui.js) – עוקב אחרי שאילתות פרופיל ממתינות כדי לא לבצע בקשות כפולות
+    pendingProfileFetches: new Set(),
+    // חלק צ'אט (chat-ui.js) – ניטור העברות P2P לצורך רינדור בועת התקדמות | HYPER CORE TECH
+    transferProgress: new Map(),
+    // חלק חיפוש רשת (chat-ui.js) – תוצאות kind:0 מתיבת החיפוש הקיימת | HYPER CORE TECH
+    networkSearchResults: [],
+    networkSearchToken: 0,
+    networkSearchPending: false,
+    networkSearchQuery: '',
+  };
+
+  let unsubscribeNotifications = null; // חלק צ'אט (chat-ui.js) – מחזיק ביטול הרשמה לעדכוני התרעות עבור ניקוי משאבים
+  let notificationSubscribeTimer = null; // חלק צ'אט (chat-ui.js) – טיימר לגיבוי כאשר feed.js נטען מאוחר יותר
+  let isRefreshing = false; // חלק רענון (chat-ui.js) – מונע רענון כפול | HYPER CORE TECH
+
+  // חלק סנכרון כפתורי טורנט (chat-ui.js) – מאחד מצב כפתורים לפי סט auto-start והעברות פעילות כדי למנוע מצב תקוע | HYPER CORE TECH
+  function syncTorrentDownloadButtons() {
+    if (!elements.messagesContainer) return;
+
+    const incomingBtns = elements.messagesContainer.querySelectorAll('.chat-message--incoming .torrent-bubble__download-btn, .chat-message--incoming .chat-file-bubble__download.torrent-bubble__download-btn');
+    if (!incomingBtns.length) return;
+
+    const activeMagnets = new Set();
+    if (App._autoStartedTorrentMagnets instanceof Set) {
+      App._autoStartedTorrentMagnets.forEach((magnetURI) => {
+        if (magnetURI) activeMagnets.add(magnetURI);
+      });
+    }
+
+    if (typeof App.torrentTransfer?.getActiveTransfers === 'function') {
+      try {
+        const transfers = App.torrentTransfer.getActiveTransfers() || [];
+        transfers.forEach((transfer) => {
+          const magnetURI = transfer?.magnetURI || '';
+          if (!magnetURI) return;
+          if (transfer?.type && transfer.type !== 'receive') return;
+          const status = String(transfer?.status || '').toLowerCase();
+          if (status === 'completed' || status === 'error' || status === 'cancelled' || status === 'rejected') return;
+          activeMagnets.add(magnetURI);
+        });
+      } catch (err) {
+        console.warn('[CHAT/UI] syncTorrentDownloadButtons failed to read active transfers', err);
+      }
+    }
+
+    incomingBtns.forEach((btn) => {
+      if (!btn.dataset.defaultHtml) {
+        btn.dataset.defaultHtml = btn.innerHTML;
+      }
+
+      const magnetURI = btn.getAttribute('data-magnet');
+      const localUrl =
+        btn.getAttribute('data-download-url') ||
+        (magnetURI && typeof App.getTorrentBlob === 'function' ? App.getTorrentBlob(magnetURI)?.url : '');
+      // יש קובץ מקומי — כפתור שמירה רגיל, לא מצב "מוריד..." | HYPER CORE TECH
+      if (localUrl) {
+        btn.setAttribute('data-download-url', localUrl);
+        btn.disabled = false;
+        if (btn.dataset.defaultHtml) btn.innerHTML = btn.dataset.defaultHtml;
+        return;
+      }
+
+      const shouldDisable = Boolean(magnetURI && activeMagnets.has(magnetURI));
+
+      if (shouldDisable) {
+        btn.disabled = true;
+        const hasTextLabel = (btn.dataset.defaultHtml || '').includes('הורד');
+        btn.innerHTML = hasTextLabel
+          ? '<i class="fa-solid fa-spinner fa-spin"></i> מוריד...'
+          : '<i class="fa-solid fa-spinner fa-spin"></i>';
+        return;
+      }
+
+      btn.disabled = false;
+      if (btn.dataset.defaultHtml && btn.innerHTML !== btn.dataset.defaultHtml) {
+        btn.innerHTML = btn.dataset.defaultHtml;
+      }
+    });
+  }
+
+  // חלק חשיפה (chat-ui.js) – API גלובלי לסנכרון כפתורי הורדה ממודולים אחרים (למשל WebTorrent) | HYPER CORE TECH
+  App.syncTorrentDownloadButtons = syncTorrentDownloadButtons;
+
+  // חלק אופטימיזציה (chat-ui.js) – debounce ו-throttle למניעת עומס ביצועים | HYPER CORE TECH
+  function debounce(fn, delay) {
+    let timer = null;
+    return function(...args) {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn.apply(this, args), delay);
+    };
+  }
+  
+  function throttle(fn, limit) {
+    let lastCall = 0;
+    let pending = null;
+    return function(...args) {
+      const now = Date.now();
+      if (now - lastCall >= limit) {
+        lastCall = now;
+        fn.apply(this, args);
+      } else if (!pending) {
+        pending = setTimeout(() => {
+          lastCall = Date.now();
+          pending = null;
+          fn.apply(this, args);
+        }, limit - (now - lastCall));
+      }
+    };
+  }
+  
+  // גרסאות מאופטמות של פונקציות רינדור - throttle למניעת רינדור כפול | HYPER CORE TECH
+  let _lastRenderContactsTime = 0;
+  const RENDER_CONTACTS_THROTTLE = 300; // מינימום 300ms בין רינדורים
+
+  // חלק רענון שיחות (chat-ui.js) – פונקציה לרענון כל השיחות וההודעות מחדש | HYPER CORE TECH
+  async function handleRefreshAllConversations() {
+    if (isRefreshing) return;
+    isRefreshing = true;
+    
+    // הצגת אינדיקטור טעינה על כפתור הרענון
+    const refreshBtn = elements.refreshContacts;
+    if (refreshBtn) {
+      refreshBtn.classList.add('is-loading');
+      const icon = refreshBtn.querySelector('i');
+      if (icon) icon.classList.add('fa-spin');
+    }
+    
+    try {
+      // איפוס סנכרון לרצפת 90 יום (לא 0) – מונע משיכת היסטוריה ישנה מהריליי | HYPER CORE TECH
+      if (typeof App.setChatLastSyncTs === 'function') {
+        const floor = typeof App.getChatRetentionCutoffTs === 'function'
+          ? App.getChatRetentionCutoffTs()
+          : Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+        App.setChatLastSyncTs(floor);
+      }
+      try { App.pruneExpiredChatHistory?.(); } catch (_) {}
+      
+      // קריאה לפונקציית הסנכרון מחדש
+      if (typeof App.syncChatHistory === 'function') {
+        await App.syncChatHistory();
+      } else if (typeof App.ensureChatEnabled === 'function') {
+        App.ensureChatEnabled();
+      }
+      
+      // רענון רשימת אנשי הקשר
+      renderContacts();
+      
+      // אם יש שיחה פעילה, רענן גם אותה
+      if (state.activeContact) {
+        renderMessages(state.activeContact);
+      }
+      
+      console.log('[CHAT/UI] Refreshed all conversations');
+    } catch (err) {
+      console.warn('[CHAT/UI] Failed to refresh conversations', err);
+    } finally {
+      isRefreshing = false;
+      if (refreshBtn) {
+        refreshBtn.classList.remove('is-loading');
+        const icon = refreshBtn.querySelector('i');
+        if (icon) icon.classList.remove('fa-spin');
+      }
+    }
+  }
+
+  const PANEL_MODES = {
+    LIST: 'list',
+    CONVERSATION: 'conversation',
+    NOTIFICATIONS: 'notifications',
+  };
+
+  function updatePanelMode(mode) {
+    const safeMode = Object.values(PANEL_MODES).includes(mode) ? mode : PANEL_MODES.LIST;
+    state.panelMode = safeMode;
+    if (!elements.panel) {
+      return;
+    }
+    elements.panel.classList.remove('chat-panel--list-only', 'chat-panel--conversation', 'chat-panel--notifications');
+    if (safeMode === PANEL_MODES.CONVERSATION) {
+      elements.panel.classList.add('chat-panel--conversation');
+    } else if (safeMode === PANEL_MODES.NOTIFICATIONS) {
+      elements.panel.classList.add('chat-panel--notifications');
+    } else {
+      elements.panel.classList.add('chat-panel--list-only');
+    }
+  }
+
+  // חלק צ'אט (chat-ui.js) – שליטה בסטטוס התפריט התחתון והצדדי בסגנון וואטסאפ
+  function setFooterMode(mode) {
+    state.footerMode = mode;
+    
+    // עדכון סרגל תחתון (מובייל)
+    if (elements.footerItems?.length) {
+      elements.footerItems.forEach((item) => {
+        if (item.dataset.chatNav === mode) {
+          item.classList.add('is-active');
+        } else {
+          item.classList.remove('is-active');
+        }
+      });
+    }
+
+    // עדכון סרגל צדדי (דסקטופ)
+    if (elements.navSidebarItems?.length) {
+      elements.navSidebarItems.forEach((item) => {
+        // התעלמות מכפתורי פעולה שאינם טאבים (כמו home או settings אם הם לא מצב)
+        if (item.id === 'chatNavHome') return; 
+        
+        if (item.dataset.chatNav === mode) {
+          item.classList.add('is-active');
+        } else {
+          item.classList.remove('is-active');
+        }
+      });
+    }
+  }
+
+  function handleFooterNav(item) {
+    const nav = item?.dataset?.chatNav;
+    if (!nav) {
+      return;
+    }
+    switch (nav) {
+      case 'contacts':
+        setFooterMode('contacts');
+        state.activeContact = null;
+        resetConversationView();
+        renderContacts();
+        if (!state.isOpen) {
+          togglePanel(true);
+        }
+        break;
+      case 'notifications':
+        setFooterMode('notifications');
+        if (!state.isOpen) {
+          togglePanel(true);
+        }
+        showNotificationsView();
+        break;
+      case 'home':
+        // סגירת שיחות + חזרה לאותו פוסט — בלי ללחוץ בית (שמרענן את הפיד) | HYPER CORE TECH
+        setFooterMode('home');
+        togglePanel(false);
+        if (typeof App.handleHomeButtonAction === 'function') {
+          // לא קוראים handleHome אם רק סוגרים צ'אט — רק resume | HYPER CORE TECH
+          if (typeof App.resumeCenteredFeedVideo === 'function') App.resumeCenteredFeedVideo();
+          else if (typeof window.resumeCenteredFeedVideo === 'function') window.resumeCenteredFeedVideo();
+        } else if (typeof App.resumeCenteredFeedVideo === 'function') {
+          App.resumeCenteredFeedVideo();
+        } else if (typeof window.resumeCenteredFeedVideo === 'function') {
+          window.resumeCenteredFeedVideo();
+        }
+        break;
+      case 'profile':
+        // חלק פרופיל (chat-ui.js) – פתיחת פרופיל כ־overlay, בלי ניווט מלא | HYPER CORE TECH
+        console.log('[CHAT] Profile clicked - opening profile overlay');
+        togglePanel(false);
+        {
+          const profileBtn = doc.querySelector('.primary-nav [data-nav="profile"]');
+          if (profileBtn && typeof profileBtn.click === 'function') {
+            profileBtn.click();
+          } else {
+            const profilePanel = doc.getElementById('profilePanel');
+            const profileFrame = doc.getElementById('profilePanelFrame');
+            if (profilePanel && profileFrame) {
+              if (typeof App.pauseAllFeedVideos === 'function') App.pauseAllFeedVideos();
+              profileFrame.src = './profile.html?embedded=1';
+              profilePanel.hidden = false;
+            } else {
+              window.location.href = 'profile.html';
+            }
+          }
+        }
+        break;
+      case 'games':
+        // חלק משחקים (chat-ui.js) – פתיחת דף המשחקים | HYPER CORE TECH
+        console.log('[CHAT] Games clicked - navigating to games.html');
+        window.location.href = 'games.html';
+        break;
+      default:
+        break;
+    }
+  }
+
+  function formatTimestamp(ts) {
+    if (!ts) return '';
+    const date = new Date(ts * 1000);
+    const now = new Date();
+    const sameDay =
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate();
+    const timePart = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    if (sameDay) {
+      return timePart;
+    }
+    const datePart = date.toLocaleDateString(undefined, { day: '2-digit', month: '2-digit' });
+    return `${datePart} ${timePart}`;
+  }
+
+  // חלק צ'אט (chat-ui.js) – פורמט זמן להצגה בתוך בועת הודעה (רק שעה:דקה כמו וואטסאפ)
+  function formatMessageTime(ts) {
+    if (!ts) return '';
+    const date = new Date(ts * 1000);
+    return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+
+  // חלק צ'אט (chat-ui.js) – מפתח יום (YYYY-MM-DD) לקיבוץ הודעות והצגת כותרות תאריך דביקות
+  function getMessageDayKey(ts) {
+    if (!ts) return '';
+    const date = new Date(ts * 1000);
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // חלק צ'אט (chat-ui.js) – כותרת יום בסגנון וואטסאפ: היום/אתמול/יום בשבוע/תאריך מלא
+  function formatMessageDayHeader(ts) {
+    if (!ts) return '';
+    const date = new Date(ts * 1000);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diffDays = Math.round((startOfToday - startOfDate) / 86400000);
+    if (diffDays === 0) return 'היום';
+    if (diffDays === 1) return 'אתמול';
+    if (diffDays >= 2 && diffDays <= 6) {
+      return date.toLocaleDateString('he-IL', { weekday: 'long' });
+    }
+    return date.toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  }
+
+  // חלק צ'אט (chat-ui.js) – פורמט זמן לרשימת אנשי קשר בסגנון WhatsApp: היום=שעה, אחרת=אתמול/יום/תאריך
+  function formatContactListTimestamp(ts) {
+    if (!ts) return '';
+    const dayHeader = formatMessageDayHeader(ts);
+    if (dayHeader === 'היום') {
+      return formatMessageTime(ts);
+    }
+    return dayHeader;
+  }
+
+  // טון צבע לשעת כרטיס שיחה (עיצוב דסקטופ Cyber) | HYPER CORE TECH
+  function contactListTimeToneClass(ts, unreadCount, isOnline) {
+    if (Number(unreadCount) > 0) return 'chat-contact__time--active';
+    if (isOnline) return 'chat-contact__time--online';
+    const n = Number(ts) || 0;
+    if (!n) return 'chat-contact__time--normal';
+    const ageSec = Math.max(0, Date.now() / 1000 - n);
+    if (ageSec >= 7 * 86400) return 'chat-contact__time--old';
+    return 'chat-contact__time--normal';
+  }
+
+  // חלק צ'אט (chat-ui.js) – צליל התרעה להודעות נכנסות
+  let chatSoundSuppressedUntil = 0;
+  function suppressChatSoundsBriefly(ms = 3000) {
+    chatSoundSuppressedUntil = Date.now() + Math.max(0, ms);
+  }
+  try {
+    window.addEventListener('sos-native-resume', () => {
+      suppressChatSoundsBriefly(3000);
+      reconcileActiveConversationRead('native-resume');
+    });
+  } catch (_) {}
+
+  function ensureChatMessageAudio() {
+    if (chatMessageAudio) return;
+    try {
+      chatMessageAudio = new window.Audio(CHAT_MESSAGE_SOUND_URL);
+      chatMessageAudio.preload = 'auto';
+      chatMessageAudio.playsInline = true;
+      chatMessageAudio.setAttribute('playsinline', '');
+    } catch (err) {
+      console.warn('Failed to init chat message audio', err);
+    }
+  }
+
+  function playChatMessageSound() {
+    if (Date.now() < chatSoundSuppressedUntil) return;
+    // באפליקציית APK: צליל בממשק רק בחזית; ברקע הצליל מגיע מהתראת Native | HYPER CORE TECH
+    if (typeof App.isNativeShell === 'function' && App.isNativeShell()) {
+      if (!isNativeHostAlive()) return;
+      if (doc.hidden || doc.visibilityState === 'hidden') return;
+    }
+    ensureChatMessageAudio();
+    if (!chatMessageAudio) return;
+    try {
+      chatMessageAudio.currentTime = 0;
+      const p = chatMessageAudio.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch {}
+  }
+
+  /** APK: האם המעטפת בחזית (אמין יותר מ-document.hidden ב-WebView) | HYPER CORE TECH */
+  function isNativeHostAlive() {
+    try {
+      if (window.SosNativeShell && typeof window.SosNativeShell.isHostAlive === 'function') {
+        return !!window.SosNativeShell.isHostAlive();
+      }
+    } catch (_) {}
+    // אם הגשר לא זמין – לא מניחים חזית (מונע דילוג על התראות ברקע) | HYPER CORE TECH
+    return false;
+  }
+
+  /** האם המשתמש באמת צופה בממשק עכשיו | HYPER CORE TECH */
+  function isUiInForeground() {
+    if (typeof App.isNativeShell === 'function' && App.isNativeShell()) {
+      return isNativeHostAlive();
+    }
+    const isHidden = !!doc.hidden || doc.visibilityState === 'hidden';
+    const hasFocus = typeof doc.hasFocus === 'function' ? doc.hasFocus() : true;
+    return !isHidden && hasFocus;
+  }
+
+  /** שיחה פתוחה + ממשק בחזית – רק אז נצפה / בלי התראה | HYPER CORE TECH */
+  function isConversationActivelyViewed(peerPubkey) {
+    const activePeer = state.activeContact ? state.activeContact.toLowerCase() : null;
+    const normalizedPeer = String(peerPubkey || '').toLowerCase();
+    if (!activePeer || !normalizedPeer || activePeer !== normalizedPeer || !state.isOpen) return false;
+    return isUiInForeground();
+  }
+
+  function reconcileActiveConversationRead(reason) {
+    const peer = state.activeContact ? String(state.activeContact).toLowerCase() : '';
+    if (!peer || !state.isOpen) return;
+    if (!isConversationActivelyViewed(peer)) return;
+    if (typeof App.markChatConversationRead !== 'function') return;
+    App.markChatConversationRead(peer);
+  }
+
+  try {
+    doc.addEventListener('visibilitychange', () => {
+      if (doc.hidden || doc.visibilityState === 'hidden') return;
+      reconcileActiveConversationRead('visibilitychange');
+    });
+  } catch (_) {}
+
+  // חלק צ'אט (chat-ui.js) – בקשת הרשאת התרעות (חסכון בבקשות) | HYPER CORE TECH
+  function requestChatNotificationPermissionIfNeeded() {
+    if (!('Notification' in window)) return;
+    try {
+      if (window.Notification.permission !== 'default') return;
+      const now = Date.now();
+      if (chatNotificationPermissionLastRequestedAt && (now - chatNotificationPermissionLastRequestedAt) < 60000) return;
+      chatNotificationPermissionLastRequestedAt = now;
+      const p = window.Notification.requestPermission();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch {}
+  }
+
+  // חלק צ'אט (chat-ui.js) – רישום SW לקבלת התראות במצב ברקע | HYPER CORE TECH
+  function registerChatServiceWorkerIfSupported() {
+    if (!('serviceWorker' in navigator)) return;
+    if (!window.isSecureContext) return;
+    try {
+      const owner = window.SOSServiceWorker;
+      if (!owner || typeof owner.register !== 'function') return;
+      const p = owner.register();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch {}
+  }
+
+  function getChatServiceWorkerRegistration() {
+    if (!('serviceWorker' in navigator)) return Promise.resolve(null);
+    if (!window.isSecureContext) return Promise.resolve(null);
+    try {
+      return navigator.serviceWorker.getRegistration().catch(() => null);
+    } catch {
+      return Promise.resolve(null);
+    }
+  }
+
+  // חלק פורמט מדיה להתראות (chat-ui.js) – פורמט הודעות מדיה בעברית להתראות | HYPER CORE TECH
+  function formatMessageForNotification(message) {
+    const AUDIO_EXTS = /\.(webm|mp3|m4a|ogg|wav|aac)(\?|$)/i;
+    const VIDEO_EXTS = /\.(mp4|ogv|mov|avi|mkv|m4v)(\?|$)/i;
+    const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg)(\?|$)/i;
+    const DOC_EXTS = /\.(pdf|docx?|xlsx?|pptx?|txt|csv|rtf|log)(\?|$)/i;
+    const ARCHIVE_EXTS = /\.(zip|rar|7z|tar|gz|tgz|bz2|xz)(\?|$)/i;
+
+    const content = typeof message === 'string' ? message : (message?.content || '');
+    const attachment = typeof message === 'object' ? message?.attachment : null;
+
+    // בדיקת attachment
+    if (attachment) {
+      const mime = String(attachment.type || '').toLowerCase();
+      const name = String(attachment.name || '').toLowerCase();
+      const url = String(attachment.url || attachment.dataUrl || '').toLowerCase();
+
+      // הודעה קולית
+      if (mime.startsWith('audio/') || AUDIO_EXTS.test(name) || AUDIO_EXTS.test(url) ||
+          name.includes('voice') || url.includes('voice')) {
+        const dur = typeof attachment.duration === 'number' && attachment.duration > 0 ? attachment.duration : null;
+        const durationText = dur !== null
+          ? ` (${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')})`
+          : '';
+        return `🎤 הודעה קולית${durationText}`;
+      }
+      // וידאו
+      if (mime.startsWith('video/') || VIDEO_EXTS.test(name) || VIDEO_EXTS.test(url)) {
+        return '📹 וידאו';
+      }
+      // תמונה
+      if (mime.startsWith('image/') || IMAGE_EXTS.test(name) || IMAGE_EXTS.test(url)) {
+        return '📷 תמונה';
+      }
+      if (ARCHIVE_EXTS.test(name) || mime.includes('zip') || mime.includes('rar') || mime.includes('compressed')) {
+        return '🗜️ קובץ מכווץ';
+      }
+      if (DOC_EXTS.test(name) || mime.includes('pdf') || mime.includes('officedocument') || mime.includes('msword')) {
+        return '📄 מסמך';
+      }
+      return '📎 קובץ';
+    }
+
+    // בדיקת URL בתוכן
+    if (content) {
+      const urlMatch = content.match(/(https?:\/\/[^\s]+)/i);
+      if (urlMatch) {
+        const url = urlMatch[0];
+        if (AUDIO_EXTS.test(url)) return '🎤 הודעה קולית';
+        if (VIDEO_EXTS.test(url)) return '📹 וידאו';
+        if (IMAGE_EXTS.test(url)) return '📷 תמונה';
+        if (ARCHIVE_EXTS.test(url)) return '🗜️ קובץ מכווץ';
+        if (DOC_EXTS.test(url)) return '📄 מסמך';
+      }
+    }
+
+    return content || 'הודעה חדשה';
+  }
+
+  // חלק דה-דופליקציה (chat-ui.js) – מניעת התראות כפולות על אותה הודעה | HYPER CORE TECH
+  const NOTIFIED_MSG_KEY = 'nostr_notified_chat_messages';
+  const MAX_NOTIFIED_IDS = 200;
+  // חלק קיבוץ התראות (chat-ui.js) – מנהל מצטבר להתראה אחת עם ספירת הודעות/משתמשים | HYPER CORE TECH
+  const aggregateNotificationState = {
+    totalMessages: 0,
+    peers: new Set(),
+    lastPeer: null,
+    lastSnippet: '',
+    lastName: ''
+  };
+
+  function resetAggregateNotificationState() {
+    aggregateNotificationState.totalMessages = 0;
+    aggregateNotificationState.peers.clear();
+    aggregateNotificationState.lastPeer = null;
+    aggregateNotificationState.lastSnippet = '';
+    aggregateNotificationState.lastName = '';
+  }
+
+  function buildAggregateNotificationBody() {
+    const usersCount = aggregateNotificationState.peers.size;
+    const header = `${aggregateNotificationState.totalMessages} הודעות מ-${usersCount} משתמשים`;
+    const tail = aggregateNotificationState.lastSnippet
+      ? `\n${aggregateNotificationState.lastName || 'משתמש'}: ${aggregateNotificationState.lastSnippet}`
+      : '';
+    return `${header}${tail}`;
+  }
+  
+  function getNotifiedMessageIds() {
+    try {
+      const raw = sessionStorage.getItem(NOTIFIED_MSG_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }
+  
+  function markMessageNotified(messageId) {
+    if (!messageId) return;
+    try {
+      const ids = getNotifiedMessageIds();
+      if (!ids.includes(messageId)) {
+        ids.push(messageId);
+        while (ids.length > MAX_NOTIFIED_IDS) ids.shift();
+        sessionStorage.setItem(NOTIFIED_MSG_KEY, JSON.stringify(ids));
+      }
+    } catch {}
+  }
+  
+  function wasMessageNotified(messageId) {
+    return messageId && getNotifiedMessageIds().includes(messageId);
+  }
+
+  // חלק צ'אט (chat-ui.js) – התראת מערכת על הודעה נכנסת כאשר החלון ברקע/לא בשיחה הפעילה | HYPER CORE TECH
+  function showIncomingChatNotification(peerPubkey, message, messageId) {
+    try {
+      if (!peerPubkey || !message) return;
+      
+      // חלק דה-דופליקציה (chat-ui.js) – מניעת התראה כפולה על אותה הודעה | HYPER CORE TECH
+      if (messageId && wasMessageNotified(messageId)) {
+        return;
+      }
+
+      const normalizedPeer = peerPubkey.toLowerCase();
+      // ברקע (גם עם שיחה פתוחה ב-state) – כן מתריעים; נצפה רק בחזית | HYPER CORE TECH
+      if (isConversationActivelyViewed(normalizedPeer)) return;
+      
+      // סימון ההודעה כ"הותרעה" כדי שלא תופיע שוב
+      if (messageId) markMessageNotified(messageId);
+
+      const contact = App.chatState?.contacts?.get(normalizedPeer);
+      const name = contact?.name || `משתמש ${peerPubkey.slice(0, 8)}`;
+      const picture = contact?.picture || '';
+      // חלק התראות מדיה (chat-ui.js) – שימוש בפורמט מדיה בעברית להתראות | HYPER CORE TECH
+      const safeSnippet = formatMessageForNotification(message).slice(0, 120);
+
+      // חלק קיבוץ התראות (chat-ui.js) – צבירת ספירה ואיחוד להתראה אחת | HYPER CORE TECH
+      aggregateNotificationState.totalMessages += 1;
+      aggregateNotificationState.peers.add(normalizedPeer);
+      aggregateNotificationState.lastPeer = normalizedPeer;
+      aggregateNotificationState.lastSnippet = safeSnippet;
+      aggregateNotificationState.lastName = name;
+
+      const openUrl = `${window.location.origin}${window.location.pathname}?chat=${normalizedPeer}`;
+
+      // APK: בחזית – צליל מקומי; ברקע – התראת Native (P2P לא עובר ב-Relay) | HYPER CORE TECH
+      if (typeof App.isNativeShell === 'function' && App.isNativeShell()) {
+        if (isNativeHostAlive()) return;
+        const notifBody = aggregateNotificationState.totalMessages > 1
+          ? buildAggregateNotificationBody()
+          : safeSnippet;
+        if (typeof App.nativeShowNotification === 'function') {
+          try {
+            App.nativeShowNotification(
+              name,
+              notifBody,
+              openUrl,
+              `chat-${normalizedPeer}`,
+              messageId || '',
+              normalizedPeer
+            );
+          } catch (_e) {}
+        }
+        return;
+      }
+
+      if (!('Notification' in window)) return;
+      if (window.Notification.permission !== 'granted') return;
+
+      registerChatServiceWorkerIfSupported();
+
+      const baseOptions = {
+        body: buildAggregateNotificationBody(),
+        tag: 'chat-aggregate',
+        renotify: true
+      };
+      if (picture) baseOptions.icon = picture;
+      try { baseOptions.requireInteraction = true; } catch {}
+
+      const swOptions = Object.assign({}, baseOptions, {
+        actions: [{ action: 'open', title: "פתח צ'אט" }],
+        data: {
+          type: 'chat-message-aggregate',
+          peerPubkey: normalizedPeer,
+          eventId: messageId || '',
+          url: openUrl
+        }
+      });
+
+      getChatServiceWorkerRegistration().then((reg) => {
+        if (reg && typeof reg.showNotification === 'function') {
+          try {
+            const p = reg.showNotification(name, swOptions);
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          } catch {}
+          return;
+        }
+        const n = new window.Notification(name, baseOptions);
+        n.onclick = () => {
+          try { window.focus(); } catch {}
+          openConversationFromNotification(normalizedPeer);
+        };
+      }).catch(() => {
+        try {
+          const n = new window.Notification(name, baseOptions);
+          n.onclick = () => {
+            try { window.focus(); } catch {}
+            openConversationFromNotification(normalizedPeer);
+          };
+        } catch {}
+      });
+    } catch (err) {
+      console.warn('Failed to show chat message notification', err);
+    }
+  }
+
+  // חלק צ'אט (chat-ui.js) – פתיחת שיחה מתוך הודעת SW | HYPER CORE TECH
+  function openConversationFromNotification(peerPubkey) {
+    if (!peerPubkey) return;
+    const normalized = String(peerPubkey).toLowerCase();
+    try {
+      if (typeof App.ensureChatContact === 'function') App.ensureChatContact(normalized);
+    } catch (_) {}
+    if (typeof App.showChatConversation === 'function') {
+      App.showChatConversation(normalized);
+      return;
+    }
+    state.activeContact = normalized;
+    togglePanel(true);
+    renderContacts();
+    renderMessages(normalized, { resetLimit: true, force: true });
+    updatePanelMode(PANEL_MODES.CONVERSATION);
+    App.markChatConversationRead(normalized);
+  }
+
+  // חלק צ'אט (chat-ui.js) – טיפול בהודעות מה-SW עבור התראות צ'אט | HYPER CORE TECH
+  function handleChatServiceWorkerMessage(event) {
+    const data = event && event.data ? event.data : null;
+    if (!data) return;
+    const type = data.type;
+    if (
+      type !== 'chat-message-notification-action'
+      && type !== 'sos-deeplink'
+      && type !== 'missed-call-notification-action'
+    ) return;
+    // sos-deeplink עם שיחה נכנסת מטופל ב־chat-deeplink / call UI | HYPER CORE TECH
+    if (type === 'sos-deeplink' && data.incomingCall) return;
+    const peerPubkey = data.peerPubkey || data.chat || null;
+    if (!peerPubkey) return;
+    try { window.focus(); } catch {}
+    openConversationFromNotification(peerPubkey);
+  }
+
+  function initChatServiceWorkerMessageHandling() {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+      navigator.serviceWorker.addEventListener('message', handleChatServiceWorkerMessage);
+    } catch {}
+  }
+
+  // חלק צ'אט (chat-ui.js) – שולף את ההודעה האחרונה האמיתית לצורך תצוגה מקדימה ברשימת אנשי קשר
+  function resolveContactLastMessageInfo(contact) {
+    const fallbackText = typeof contact?.lastMessage === 'string' ? contact.lastMessage : '';
+    const fallbackTs = Number(contact?.lastTimestamp) || 0;
+    const pubkey = contact?.pubkey;
+    if (!pubkey || typeof App.getChatMessages !== 'function') {
+      return { text: fallbackText, ts: fallbackTs };
+    }
+    const messages = App.getChatMessages(pubkey) || [];
+    if (!Array.isArray(messages) || !messages.length) {
+      return { text: fallbackText, ts: fallbackTs };
+    }
+    let last = null;
+    let lastTs = -1;
+    messages.forEach((m) => {
+      const ts = Number(m?.createdAt) || 0;
+      if (ts >= lastTs) {
+        lastTs = ts;
+        last = m;
+      }
+    });
+    if (!last) {
+      return { text: fallbackText, ts: fallbackTs };
+    }
+    
+    // חלק זיהוי מדיה (chat-ui.js) – זיהוי סוגי מדיה לתצוגה בסגנון וואטסאפ | HYPER CORE TECH
+    const AUDIO_EXTS = /\.(webm|mp3|m4a|ogg|wav|aac)(\?|$)/i;
+    const VIDEO_EXTS = /\.(mp4|ogv|mov|avi|mkv|m4v|webm)(\?|$)/i;
+    const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg)(\?|$)/i;
+    const DOC_EXTS = /\.(pdf|docx?|xlsx?|pptx?|txt|csv|rtf|odt|ods|odp|log)(\?|$)/i;
+    const ARCHIVE_EXTS = /\.(zip|rar|7z|tar|gz|tgz|bz2|xz)(\?|$)/i;
+
+    function looksLikeFileOnlyCaption(content, fileName) {
+      const c = String(content || '').trim();
+      if (!c) return true;
+      const n = String(fileName || '').trim();
+      const bare = c.replace(/^📎\s*/u, '').trim();
+      if (n && (c === n || bare === n || c === `📎 ${n}`)) return true;
+      if (/^📎\s+\S+$/u.test(c)) return true;
+      if (/^IMG[-_]/i.test(bare) || /^VID[-_]/i.test(bare)) return true;
+      return false;
+    }
+
+    // חלק זיהוי מדיה משופר (chat-ui.js) – תומך ב-Blossom URLs שלא מכילים סיומת | HYPER CORE TECH
+    function detectMediaType(mime, name, url, attachment) {
+      mime = String(mime || '').toLowerCase();
+      name = String(name || '').toLowerCase();
+      url = String(url || '').toLowerCase();
+
+      const hasDuration = attachment && typeof attachment.duration === 'number' && attachment.duration > 0;
+      const isVoice = name.includes('voice') || name.includes('ptt');
+      // הודעה קולית לפני וידאו (webm קולי נפוץ בצ'אט) | HYPER CORE TECH
+      if (
+        mime.startsWith('audio/') ||
+        isVoice ||
+        hasDuration ||
+        /\.(mp3|m4a|ogg|wav|aac)(\?|$)/i.test(name) ||
+        /\.(mp3|m4a|ogg|wav|aac)(\?|$)/i.test(url) ||
+        ((name.endsWith('.webm') || /\.webm(\?|$)/i.test(url)) && !mime.startsWith('video/'))
+      ) {
+        return 'audio';
+      }
+      if (mime.startsWith('video/') || VIDEO_EXTS.test(name) || VIDEO_EXTS.test(url)) {
+        return 'video';
+      }
+      if (mime.startsWith('image/') || IMAGE_EXTS.test(name) || IMAGE_EXTS.test(url)) {
+        return 'image';
+      }
+      if (
+        mime.includes('zip') ||
+        mime.includes('rar') ||
+        mime.includes('compressed') ||
+        mime.includes('x-7z') ||
+        mime.includes('x-tar') ||
+        mime.includes('gzip') ||
+        ARCHIVE_EXTS.test(name) ||
+        ARCHIVE_EXTS.test(url)
+      ) {
+        return 'archive';
+      }
+      if (
+        mime.includes('pdf') ||
+        mime.includes('msword') ||
+        mime.includes('officedocument') ||
+        mime.includes('spreadsheet') ||
+        mime.includes('presentation') ||
+        mime === 'text/plain' ||
+        mime === 'text/csv' ||
+        DOC_EXTS.test(name) ||
+        DOC_EXTS.test(url)
+      ) {
+        return 'document';
+      }
+      return 'file';
+    }
+
+    function detectMediaFromUrl(url) {
+      if (AUDIO_EXTS.test(url)) return 'audio';
+      if (VIDEO_EXTS.test(url)) return 'video';
+      if (IMAGE_EXTS.test(url)) return 'image';
+      if (ARCHIVE_EXTS.test(url)) return 'archive';
+      if (DOC_EXTS.test(url)) return 'document';
+      return null;
+    }
+
+    function formatChatListMediaPreview(mediaType, content, attachment) {
+      const fileOnly = looksLikeFileOnlyCaption(content, attachment?.name);
+      if (mediaType === 'audio') {
+        const dur = typeof attachment?.duration === 'number' && attachment.duration > 0 ? attachment.duration : null;
+        const durationText = dur !== null
+          ? ` (${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')})`
+          : '';
+        return `🎤 הודעה קולית${durationText}`;
+      }
+      if (mediaType === 'video') {
+        return fileOnly ? '📹 וידאו' : `📹 ${content}`;
+      }
+      if (mediaType === 'image') {
+        return fileOnly ? '📷 תמונה' : `📷 ${content}`;
+      }
+      if (mediaType === 'archive') return '🗜️ קובץ מכווץ';
+      if (mediaType === 'document') return '📄 מסמך';
+      return '📎 קובץ';
+    }
+
+    let text = '';
+    const content = typeof last.content === 'string' ? last.content.trim() : '';
+
+    // בדיקת attachment
+    if (last.attachment) {
+      const a = last.attachment;
+      const mediaType = detectMediaType(a.type, a.name, a.url || a.dataUrl, a);
+      text = formatChatListMediaPreview(mediaType, content, a);
+    } else if (content) {
+      // בדיקה אם יש URL של מדיה בטקסט
+      const urlMatch = content.match(/(https?:\/\/[^\s]+)/i);
+      if (urlMatch) {
+        const mediaType = detectMediaFromUrl(urlMatch[0]);
+        const remainingText = content.replace(urlMatch[0], '').trim();
+        if (mediaType) {
+          text = formatChatListMediaPreview(mediaType, remainingText, { name: '' });
+        } else {
+          text = content;
+        }
+      } else if (/^📎\s+\S+/u.test(content)) {
+        const bare = content.replace(/^📎\s*/u, '').trim();
+        const mediaType = detectMediaType('', bare, bare, null);
+        text = formatChatListMediaPreview(mediaType, '', { name: bare });
+      } else {
+        text = content;
+      }
+    }
+    
+    // חלק סטטוס קריאה (chat-ui.js) – מחזיר גם אם ההודעה יוצאת ומה הסטטוס שלה | HYPER CORE TECH
+    const isOutgoing = last?.direction === 'outgoing' || last?.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+    const status = last?.status || 'sent';
+    
+    return { text: text || fallbackText, ts: lastTs || fallbackTs, isOutgoing, status };
+  }
+
+  let chatEnableRetryHandle = null;
+  function ensureChatEnabled() {
+    if (!App.pool) {
+      if (!chatEnableRetryHandle) {
+        chatEnableRetryHandle = setTimeout(() => {
+          chatEnableRetryHandle = null;
+          ensureChatEnabled();
+        }, 600);
+      }
+      return;
+    }
+    if (chatEnableRetryHandle) {
+      clearTimeout(chatEnableRetryHandle);
+      chatEnableRetryHandle = null;
+    }
+    // Restore/merge must complete before live subscribe so a stale IndexedDB
+    // snapshot cannot overwrite messages that arrived during the await gap.
+    const bootChat = async () => {
+      try {
+        if (typeof App.restoreChatState === 'function') {
+          await App.restoreChatState();
+        } else if (App.chatStateReady && typeof App.chatStateReady.then === 'function') {
+          await App.chatStateReady;
+        }
+      } catch (_restoreErr) { /* continue */ }
+      if (typeof App.subscribeToChatEvents === 'function') {
+        App.subscribeToChatEvents();
+      }
+      if (typeof App.bootstrapChatContacts === 'function') {
+        App.bootstrapChatContacts();
+      }
+    };
+    bootChat();
+  }
+
+  // חלק צ'אט (chat-ui.js) – מקלדת כמו וואטסאפ: הפאנל = visualViewport; הדר לא זז, קומפוזר בתחתית הנראה | HYPER CORE TECH
+  let _viewportRaf = 0;
+  let _viewportThrottleTimer = 0;
+  let _kbStableHeight = 0;
+  let _mobileGeomApplied = false;
+  let _focusGeomTimer = 0;
+  let _savedFeedScrollTop = null;
+  const KB_OPEN_EPS = 72;
+
+  function isChatNativeShell() {
+    try {
+      if (window.SOS_NATIVE_SHELL) return true;
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.isNativeShell === 'function') {
+        const v = bridge.isNativeShell();
+        if (v === true || v === 'true') return true;
+      }
+    } catch (_) {}
+    return /SOSNativeShell\//i.test(navigator.userAgent || '');
+  }
+
+  function getVideosFeedViewport() {
+    return doc.querySelector('.videos-feed__viewport');
+  }
+
+  function lockVideosFeedBehindChat() {
+    const feedVp = getVideosFeedViewport();
+    if (feedVp) {
+      _savedFeedScrollTop = feedVp.scrollTop;
+    }
+    try {
+      const h = Math.max(window.innerHeight || 0, doc.documentElement?.clientHeight || 0);
+      if (h > 0) {
+        doc.documentElement.style.setProperty('--app-height', `${h}px`);
+        doc.documentElement.style.setProperty('--chat-lock-feed-height', `${h}px`);
+      }
+    } catch (_) {}
+  }
+
+  function unlockVideosFeedBehindChat() {
+    const feedVp = getVideosFeedViewport();
+    const restore = _savedFeedScrollTop;
+    _savedFeedScrollTop = null;
+    try {
+      doc.documentElement.style.removeProperty('--chat-lock-feed-height');
+    } catch (_) {}
+    if (feedVp && typeof restore === 'number' && Number.isFinite(restore)) {
+      requestAnimationFrame(() => {
+        try {
+          feedVp.scrollTop = restore;
+        } catch (_) {}
+      });
+    }
+  }
+
+  function noteKeyboardClosedBaseline() {
+    const vv = window.visualViewport;
+    const h = Math.max(
+      window.innerHeight || 0,
+      doc.documentElement?.clientHeight || 0,
+      vv?.height || 0
+    );
+    if (h > 0) _kbStableHeight = Math.max(_kbStableHeight, h);
+  }
+
+  function keepFeedScrollLocked() {
+    if (typeof _savedFeedScrollTop !== 'number') return;
+    const feedVp = getVideosFeedViewport();
+    if (feedVp && Math.abs(feedVp.scrollTop - _savedFeedScrollTop) > 2) {
+      try { feedVp.scrollTop = _savedFeedScrollTop; } catch (_) {}
+    }
+  }
+
+  function suppressDocumentScrollForChat() {
+    try {
+      if (window.scrollY || window.pageYOffset) window.scrollTo(0, 0);
+      if (doc.documentElement) doc.documentElement.scrollTop = 0;
+      if (doc.body) doc.body.scrollTop = 0;
+    } catch (_) {}
+  }
+
+  function syncChatSearchKeyboardNav() {
+    if (!doc.body) return;
+    const searchFocused =
+      !!elements.searchInput &&
+      (doc.activeElement === elements.searchInput || elements.searchInput.matches?.(':focus'));
+    const shouldHideNav =
+      !!state.isOpen &&
+      window.innerWidth <= 768 &&
+      searchFocused &&
+      !elements.panel?.classList?.contains('chat-panel--conversation');
+    doc.body.classList.toggle('chat-search-keyboard-open', shouldHideNav);
+  }
+
+  function clearVvPin() {
+    if (!elements.panel) return;
+    elements.panel.classList.remove('chat-panel--vv-pin');
+    doc.body?.classList?.remove('chat-web-vv-pin');
+    elements.panel.style.removeProperty('--chat-vv-offset');
+    elements.panel.style.removeProperty('--chat-vv-height');
+    elements.panel.style.removeProperty('--chat-keyboard-inset');
+  }
+
+  function clearMobilePanelGeometry() {
+    if (!elements.panel) return;
+    clearVvPin();
+    elements.panel.style.left = '';
+    elements.panel.style.right = '';
+    elements.panel.style.top = '';
+    elements.panel.style.bottom = '';
+    elements.panel.style.width = '';
+    elements.panel.style.maxWidth = '';
+    elements.panel.style.height = '';
+    elements.panel.style.maxHeight = '';
+    elements.panel.style.transform = '';
+    _mobileGeomApplied = false;
+  }
+
+  // פאנל מלא על ה־layout (מקלדת סגורה / APK adjustResize) | HYPER CORE TECH
+  function applyFullMobilePanel() {
+    if (!elements.panel) return;
+    clearVvPin();
+    elements.panel.style.left = '0px';
+    elements.panel.style.right = '0px';
+    elements.panel.style.top = '0px';
+    elements.panel.style.bottom = '0px';
+    elements.panel.style.width = '100%';
+    elements.panel.style.maxWidth = '100%';
+    elements.panel.style.height = '100%';
+    elements.panel.style.maxHeight = '100%';
+    elements.panel.style.transform = '';
+    _mobileGeomApplied = true;
+  }
+
+  // Web: מצמידים את כל הפאנל ל־visualViewport — הדר בראש הנראה, שורת קלט בתחתית הנראה | HYPER CORE TECH
+  function applyVisualViewportPin(offsetTop, vvH) {
+    if (!elements.panel) return;
+    elements.panel.classList.add('chat-panel--vv-pin');
+    doc.body?.classList?.add('chat-web-vv-pin');
+    elements.panel.style.setProperty('--chat-vv-offset', `${offsetTop}px`);
+    elements.panel.style.setProperty('--chat-vv-height', `${vvH}px`);
+    elements.panel.style.removeProperty('--chat-keyboard-inset');
+    elements.panel.style.left = '0px';
+    elements.panel.style.right = '0px';
+    elements.panel.style.width = '100%';
+    elements.panel.style.maxWidth = '100%';
+    elements.panel.style.transform = '';
+    // top/height באים מ־CSS var דרך .chat-panel--vv-pin | HYPER CORE TECH
+    elements.panel.style.top = '';
+    elements.panel.style.bottom = '';
+    elements.panel.style.height = '';
+    elements.panel.style.maxHeight = '';
+    _mobileGeomApplied = true;
+  }
+
+  function positionPanel() {
+    if (!elements.panel) return;
+    if (window.innerWidth > 768) {
+      clearMobilePanelGeometry();
+      doc.body?.classList?.remove('chat-search-keyboard-open');
+      return;
+    }
+
+    keepFeedScrollLocked();
+    suppressDocumentScrollForChat();
+    noteKeyboardClosedBaseline();
+    syncChatSearchKeyboardNav();
+
+    const vv = window.visualViewport;
+    const layoutH = Math.max(window.innerHeight || 0, doc.documentElement?.clientHeight || 0);
+    if (!vv || !layoutH) {
+      applyFullMobilePanel();
+      return;
+    }
+
+    const vvH = Math.max(0, Math.round(vv.height || 0));
+    const offsetTop = Math.max(0, Math.round(Number(vv.offsetTop) || 0));
+    const coveredBelow = Math.max(0, layoutH - vvH - offsetTop);
+    const layoutShrunk = _kbStableHeight > 0 ? Math.max(0, Math.round(_kbStableHeight - layoutH)) : 0;
+    const keyboardLikely = coveredBelow >= KB_OPEN_EPS || offsetTop >= 8 || (layoutH - vvH) >= KB_OPEN_EPS;
+
+    // APK adjustResize: החלון כבר התכווץ לגובה הנראה — פאנל מלא, בלי pin ובלי padding כפול | HYPER CORE TECH
+    if (isChatNativeShell() && (layoutShrunk >= KB_OPEN_EPS || !keyboardLikely || offsetTop < 8)) {
+      applyFullMobilePanel();
+      if (!keyboardLikely) {
+        _kbStableHeight = Math.max(_kbStableHeight, layoutH, vvH);
+      }
+      return;
+    }
+
+    // Web (או native בלי resize): pin ל־visualViewport — לא padding שדוחף/מקפיץ | HYPER CORE TECH
+    if (keyboardLikely && vvH > 0) {
+      applyVisualViewportPin(offsetTop, vvH);
+      return;
+    }
+
+    applyFullMobilePanel();
+    _kbStableHeight = Math.max(_kbStableHeight, layoutH, vvH + offsetTop);
+  }
+
+  function schedulePositionPanel(immediate) {
+    if (immediate) {
+      if (_viewportThrottleTimer) {
+        clearTimeout(_viewportThrottleTimer);
+        _viewportThrottleTimer = 0;
+      }
+      if (_viewportRaf) {
+        cancelAnimationFrame(_viewportRaf);
+        _viewportRaf = 0;
+      }
+      if (state.isOpen) positionPanel();
+      return;
+    }
+    if (_viewportThrottleTimer) return;
+    _viewportThrottleTimer = window.setTimeout(() => {
+      _viewportThrottleTimer = 0;
+      if (_viewportRaf) return;
+      _viewportRaf = requestAnimationFrame(() => {
+        _viewportRaf = 0;
+        if (state.isOpen) positionPanel();
+      });
+    }, 16);
+  }
+
+  function onChatComposerFocusIn(event) {
+    if (!state.isOpen || window.innerWidth > 768) return;
+    const target = event?.target;
+    if (!target) return;
+    const isSearch = target === elements.searchInput;
+    const isComposer = target === elements.messageInput || elements.composer?.contains(target);
+    if (!isSearch && !isComposer) return;
+    if (isSearch) syncChatSearchKeyboardNav();
+    suppressDocumentScrollForChat();
+    schedulePositionPanel(true);
+    if (_focusGeomTimer) {
+      clearTimeout(_focusGeomTimer);
+      _focusGeomTimer = 0;
+    }
+    // מעקב אחרי סיום אנימציית המקלדת | HYPER CORE TECH
+    _focusGeomTimer = window.setTimeout(() => {
+      _focusGeomTimer = 0;
+      if (!state.isOpen) return;
+      schedulePositionPanel(true);
+    }, 320);
+  }
+
+  function onChatComposerFocusOut() {
+    window.setTimeout(() => {
+      if (!state.isOpen || window.innerWidth > 768) return;
+      const active = doc.activeElement;
+      if (active === elements.messageInput || elements.composer?.contains(active) || active === elements.searchInput) {
+        return;
+      }
+      schedulePositionPanel(true);
+    }, 0);
+  }
+
+  function onChatSearchFocusOut() {
+    window.setTimeout(() => {
+      syncChatSearchKeyboardNav();
+      if (state.isOpen) schedulePositionPanel(true);
+    }, 0);
+  }
+
+  function togglePanel(forceOpen) {
+    const targetState = typeof forceOpen === 'boolean' ? forceOpen : !state.isOpen;
+    // מונע סגירה בטעות בזמן הורדת קובץ (a.click סינתטי) | HYPER CORE TECH
+    if (targetState === false && App.__sosSuppressChatOutsideClose) {
+      return;
+    }
+    state.isOpen = targetState;
+    if (state.isOpen) {
+      // השהיית תור וידאו בלבד + עצירת ניגון בזמן שיחות | HYPER CORE TECH
+      if (typeof App.setFeedWarmupPaused === 'function') {
+        App.setFeedWarmupPaused(true);
+      }
+      if (typeof App.pauseFeedMediaForChat === 'function') {
+        App.pauseFeedMediaForChat('chat-open');
+      }
+      if (typeof App.pauseAllFeedVideos === 'function') {
+        App.pauseAllFeedVideos();
+      }
+      elements.panel.removeAttribute('hidden');
+      elements.navButton?.setAttribute('aria-pressed', 'true');
+      elements.launcherButton?.setAttribute('aria-expanded', 'true');
+      noteKeyboardClosedBaseline();
+      if (window.innerWidth <= 768) {
+        lockVideosFeedBehindChat();
+        doc.body.classList.add('chat-overlay-open');
+      } else {
+        doc.body.classList.remove('chat-overlay-open');
+      }
+      positionPanel();
+      if (state.activeContact) {
+        App.markChatConversationRead(state.activeContact);
+        renderMessages(state.activeContact);
+        updatePanelMode(PANEL_MODES.CONVERSATION);
+      } else {
+        updatePanelMode(PANEL_MODES.LIST);
+        ensureChatEnabled();
+        renderContacts(true); // force render בפתיחה ראשונה
+      }
+      try {
+        if (typeof App.sosBackSync === 'function') App.sosBackSync();
+      } catch (_) {}
+    } else {
+      if (state.activeContact) {
+        App.markChatConversationRead(state.activeContact);
+        renderContacts(true);
+      }
+      elements.panel.setAttribute('hidden', '');
+      elements.navButton?.setAttribute('aria-pressed', 'false');
+      elements.launcherButton?.setAttribute('aria-expanded', 'false');
+      resetConversationView();
+      doc.body.classList.remove('chat-overlay-open');
+      doc.body.classList.remove('chat-search-keyboard-open');
+      clearMobilePanelGeometry();
+      unlockVideosFeedBehindChat();
+      _kbStableHeight = 0;
+      // ממשיכים טעינת פיד מהקאש אחרי סגירת שיחות | HYPER CORE TECH
+      if (typeof App.setFeedWarmupPaused === 'function') {
+        if (typeof App.maybeResumeFeedAfterChat === 'function') {
+          App.maybeResumeFeedAfterChat();
+        } else {
+          App.setFeedWarmupPaused(false);
+        }
+      }
+      try {
+        if (typeof App.clearSosDeepLinkFlags === 'function') App.clearSosDeepLinkFlags();
+      } catch (_) {}
+      try {
+        if (typeof App.sosBackSync === 'function') App.sosBackSync();
+      } catch (_) {}
+    }
+  }
+
+  // חלק מקלדת מובייל (chat-ui.js) – מעקב visualViewport לצמידת פאנל | HYPER CORE TECH
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      if (state.isOpen) schedulePositionPanel(true);
+    });
+    window.visualViewport.addEventListener('scroll', () => {
+      if (!state.isOpen) return;
+      keepFeedScrollLocked();
+      suppressDocumentScrollForChat();
+      schedulePositionPanel(true);
+    });
+  }
+  window.addEventListener('resize', () => {
+    if (state.isOpen) schedulePositionPanel(true);
+  });
+  doc.addEventListener('focusin', onChatComposerFocusIn, true);
+  doc.addEventListener('focusout', onChatComposerFocusOut, true);
+  if (elements.searchInput) {
+    elements.searchInput.addEventListener('focus', () => {
+      syncChatSearchKeyboardNav();
+      schedulePositionPanel(true);
+    });
+    elements.searchInput.addEventListener('blur', onChatSearchFocusOut);
+  }
+
+  function renderChatBadge(unreadTotal) {
+    const badges = [elements.badge, elements.launcherBadge].filter(Boolean);
+    if (!badges.length) {
+      return;
+    }
+    const count = Number(unreadTotal) || 0;
+    badges.forEach((badge) => {
+      if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.removeAttribute('hidden');
+      } else {
+        badge.setAttribute('hidden', '');
+      }
+    });
+  }
+
+  function updateFooterNotificationsBadge(notifications) {
+    if (!elements.footerNotificationsBadge) {
+      return;
+    }
+    const unreadCount = Array.isArray(notifications)
+      ? notifications.reduce((total, entry) => (!entry?.read ? total + 1 : total), 0)
+      : 0;
+    if (unreadCount > 0) {
+      elements.footerNotificationsBadge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+      elements.footerNotificationsBadge.removeAttribute('hidden');
+    } else {
+      elements.footerNotificationsBadge.setAttribute('hidden', '');
+    }
+  }
+
+  function handleNotificationItemClick(notification) {
+    if (!notification) {
+      return;
+    }
+    if (notification.postId) {
+      const target = doc.querySelector(`[data-post-id="${notification.postId}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('feed-post--highlight');
+        window.setTimeout(() => target.classList.remove('feed-post--highlight'), 2000);
+      }
+    }
+    if (notification.id && typeof App.markNotificationRead === 'function') {
+      App.markNotificationRead(notification.id);
+    }
+  }
+
+  function createNotificationElement(notification) {
+    const item = doc.createElement('li');
+    item.className = 'chat-notifications__item';
+    if (!notification?.read) {
+      item.classList.add('chat-notifications__item--unread');
+    }
+    if (notification?.id) {
+      item.dataset.notificationId = notification.id;
+    }
+    if (notification?.postId) {
+      item.dataset.postId = notification.postId;
+    }
+    const profile = notification?.actorProfile || {};
+    const actorNameRaw = profile.name || notification?.actorPubkey?.slice?.(0, 8) || 'משתמש';
+    const actorName = App.escapeHtml ? App.escapeHtml(actorNameRaw) : actorNameRaw;
+    const initialsValue = profile.initials || (typeof App.getInitials === 'function' ? App.getInitials(actorNameRaw) : 'מש');
+    const initials = App.escapeHtml ? App.escapeHtml(initialsValue) : initialsValue;
+    const avatarHtml = profile.picture
+      ? `<img src="${profile.picture}" alt="${actorName}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.parentElement && (this.parentElement.innerHTML='<span>${initials}</span>');">`
+      : `<span>${initials}</span>`;
+    const actionText = notification?.type === 'comment' ? 'הגיב לפוסט שלך' : 'אהב את הפוסט שלך';
+    const safeAction = App.escapeHtml ? App.escapeHtml(actionText) : actionText;
+    const snippetSource = notification?.type === 'comment' && notification?.content ? notification.content : '';
+    const safeSnippet = snippetSource && App.escapeHtml ? App.escapeHtml(snippetSource) : snippetSource;
+    const snippetHtml = safeSnippet ? `<p class="chat-notifications__snippet">${safeSnippet.replace(/\n/g, '<br>')}</p>` : '';
+    const timeLabel = notification?.createdAt ? formatTimestamp(notification.createdAt) : '';
+    const timeHtml = timeLabel ? `<time class="chat-notifications__time">${timeLabel}</time>` : '';
+    item.innerHTML = `
+      <div class="chat-notifications__avatar">${avatarHtml}</div>
+      <div class="chat-notifications__content">
+        <span class="chat-notifications__actor">${actorName}</span>
+        <span class="chat-notifications__action">${safeAction}</span>
+        ${snippetHtml}
+        ${timeHtml}
+      </div>
+    `;
+    item.addEventListener('click', () => handleNotificationItemClick(notification));
+    return item;
+  }
+
+  function renderNotificationsList(notifications) {
+    if (!elements.notificationsList || !elements.notificationsEmpty) {
+      return;
+    }
+    const records = Array.isArray(notifications) ? notifications : [];
+    if (!records.length) {
+      elements.notificationsEmpty.removeAttribute('hidden');
+      elements.notificationsList.innerHTML = '';
+      return;
+    }
+    elements.notificationsEmpty.setAttribute('hidden', '');
+    const fragment = doc.createDocumentFragment();
+    records.forEach((notification) => {
+      fragment.appendChild(createNotificationElement(notification));
+    });
+    elements.notificationsList.innerHTML = '';
+    elements.notificationsList.appendChild(fragment);
+  }
+
+  function showNotificationsView() {
+    state.activeContact = null;
+    if (typeof App.getNotificationsSnapshot === 'function') {
+      state.notifications = App.getNotificationsSnapshot();
+    }
+    elements.notificationsSection?.removeAttribute('hidden');
+    elements.emptyState?.setAttribute('hidden', '');
+    elements.conversationHeader?.setAttribute('hidden', '');
+    elements.composer?.setAttribute('hidden', '');
+    elements.messagesContainer?.setAttribute('hidden', '');
+    updatePanelMode(PANEL_MODES.NOTIFICATIONS);
+    renderNotificationsList(state.notifications);
+    if (typeof App.markAllNotificationsRead === 'function') {
+      App.markAllNotificationsRead();
+    }
+  }
+
+  function ensureNotificationSubscription() {
+    if (unsubscribeNotifications) {
+      return;
+    }
+    if (typeof App.subscribeNotifications !== 'function') {
+      if (!notificationSubscribeTimer) {
+        notificationSubscribeTimer = setTimeout(() => {
+          notificationSubscribeTimer = null;
+          ensureNotificationSubscription();
+        }, 400);
+      }
+      return;
+    }
+    try {
+      unsubscribeNotifications = App.subscribeNotifications((snapshot) => {
+        state.notifications = Array.isArray(snapshot) ? snapshot : [];
+        updateFooterNotificationsBadge(state.notifications);
+        if (state.panelMode === PANEL_MODES.NOTIFICATIONS) {
+          renderNotificationsList(state.notifications);
+        }
+      });
+    } catch (err) {
+      console.warn('Chat notifications subscription failed', err);
+    }
+    if (typeof App.getNotificationsSnapshot === 'function') {
+      state.notifications = App.getNotificationsSnapshot();
+      updateFooterNotificationsBadge(state.notifications);
+    }
+  }
+
+  function maybeFetchContactProfile(pubkey, contact) {
+    if (contact?.emergencyMesh) {
+      return;
+    }
+    if (!pubkey || typeof App.fetchProfile !== 'function') {
+      return;
+    }
+    const normalized = pubkey.toLowerCase();
+    const alreadyFetching = state.pendingProfileFetches.has(normalized);
+    const hasPicture = Boolean(contact?.picture);
+    const name = contact?.name || '';
+    const isFallbackName = !name || name.startsWith('משתמש ');
+    
+    // תמיד לנסות לטעון פרופיל אם השם הוא fallback
+    if (alreadyFetching) {
+      return;
+    }
+    // אם יש תמונה ושם אמיתי - לא צריך לטעון
+    if (hasPicture && !isFallbackName) {
+      return;
+    }
+    state.pendingProfileFetches.add(normalized);
+    Promise.resolve()
+      .then(() => App.fetchProfile(normalized))
+      .then((profile) => {
+        if (!profile) {
+          return;
+        }
+        const fetchedName = String(profile.name || '').trim();
+        const normalizedProfile = {
+          // בלי שם מהרשת – לא שולחים fallback שדורס שם שמור | HYPER CORE TECH
+          name: fetchedName,
+          picture: profile.picture || '',
+          initials:
+            profile.initials ||
+            (fetchedName && typeof App.getInitials === 'function' ? App.getInitials(fetchedName) : '') ||
+            'מש',
+          lastReadTimestamp: contact?.lastReadTimestamp || 0,
+        };
+        App.ensureChatContact(normalized, normalizedProfile);
+        // רינדור מחדש של רשימת אנשי הקשר אחרי עדכון הפרופיל | HYPER CORE TECH
+        renderContacts(true);
+      })
+      .catch((err) => {
+        console.warn('Chat profile fetch failed', err);
+      })
+      .finally(() => {
+        state.pendingProfileFetches.delete(normalized);
+      });
+  }
+
+  function isPeerP2PConnected(peerPubkey) {
+    const pk = String(peerPubkey || '').toLowerCase();
+    if (!pk) return false;
+    try {
+      return !!(App.dataChannel && typeof App.dataChannel.isConnected === 'function' && App.dataChannel.isConnected(pk));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function buildContactHtml(contact) {
+    // חלק צ'אט (chat-ui.js) – בונה פריט רשימת אנשי קשר עם אווטרים, שם ותצוגה מקדימה
+    const rawName = contact.name || `משתמש ${contact.pubkey.slice(0, 8)}`;
+    const displayName = rawName.length > 15 ? rawName.slice(0, 15) : rawName;
+    const safeName = App.escapeHtml ? App.escapeHtml(displayName) : displayName;
+    const initialsValue = contact.initials || (typeof App.getInitials === 'function' ? App.getInitials(rawName) : 'מש');
+    const safeInitials = App.escapeHtml ? App.escapeHtml(initialsValue) : initialsValue;
+    const lastInfo = resolveContactLastMessageInfo(contact);
+    const previewSource = lastInfo.text
+      ? lastInfo.text.replace(/\s+/g, ' ').trim().slice(0, 60)
+      : 'אין הודעות עדיין';
+    const safePreview = App.escapeHtml ? App.escapeHtml(previewSource) : previewSource;
+    // חלק צ'אט (chat-ui.js) – תצוגת זמן הודעה אחרונה ברשימת אנשי קשר בסגנון WhatsApp | HYPER CORE TECH
+    const timeLabel = lastInfo.ts ? formatContactListTimestamp(lastInfo.ts) : '';
+    const p2pOn = isPeerP2PConnected(contact.pubkey);
+    const timeTone = contactListTimeToneClass(lastInfo.ts, contact.unreadCount, p2pOn);
+    const timeHtml = timeLabel
+      ? `<span class="chat-contact__time ${timeTone}">${timeLabel}</span>`
+      : '';
+    const badgeHtml = contact.unreadCount
+      ? `<span class="chat-contact__badge">${contact.unreadCount > 99 ? '99+' : contact.unreadCount}</span>`
+      : '';
+    const activeClass = state.activeContact === contact.pubkey ? ' chat-contact--active' : '';
+    const p2pClass = p2pOn ? ' chat-contact__avatar--p2p' : '';
+    const avatarTitle = p2pOn ? `${safeName} · P2P ישיר` : safeName;
+    const avatarHtml = contact.picture
+      ? `<span class="chat-contact__avatar${p2pClass}" title="${avatarTitle}" data-p2p="${p2pOn ? '1' : '0'}"><img src="${contact.picture}" alt="${safeName}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.parentElement.classList.add('chat-contact__avatar--initials'); this.parentElement.textContent='${safeInitials}'; this.remove();"></span>`
+      : `<span class="chat-contact__avatar chat-contact__avatar--initials${p2pClass}" title="${avatarTitle}" data-p2p="${p2pOn ? '1' : '0'}">${safeInitials}</span>`;
+
+    // חלק סטטוס קריאה (chat-ui.js) – הוספת וי לרשימת אנשי קשר כמו וואטסאפ (אייקוני FontAwesome זהים לשיחה) | HYPER CORE TECH
+    let statusCheckHtml = '';
+    if (lastInfo.isOutgoing) {
+      const status = lastInfo.status || 'sent';
+      if (status === 'read') {
+        // וי כפול ירוק - נקרא (אייקון FontAwesome כמו בשיחה)
+        statusCheckHtml = '<span class="chat-contact__status chat-contact__status--read"><i class="fa-solid fa-check-double"></i></span>';
+      } else if (status === 'sent') {
+        // וי כפול אפור - נשלח (אייקון FontAwesome כמו בשיחה)
+        statusCheckHtml = '<span class="chat-contact__status chat-contact__status--sent"><i class="fa-solid fa-check-double"></i></span>';
+      } else if (status === 'sending') {
+        // שעון - בשליחה (אייקון FontAwesome כמו בשיחה)
+        statusCheckHtml = '<span class="chat-contact__status chat-contact__status--sending"><i class="fa-solid fa-clock"></i></span>';
+      }
+    }
+
+    return `
+      <article class="chat-contact${activeClass}" data-chat-contact="${contact.pubkey}">
+        ${avatarHtml}
+        <div class="chat-contact__body">
+          <div class="chat-contact__row">
+            <span class="chat-contact__name">${safeName}</span>
+            ${timeHtml}
+          </div>
+          <div class="chat-contact__row chat-contact__row--sub">
+            <span class="chat-contact__last-message">${statusCheckHtml}${safePreview}</span>
+            ${badgeHtml}
+          </div>
+        </div>
+      </article>
+    `;
+  }
+
+  function updateSearchLoadingUI() {
+    const searchWrap = elements.searchInput?.closest?.('.chat-contacts__search');
+    if (!searchWrap) return;
+    const searching = Boolean(state.networkSearchPending) && state.filterText.trim().length >= 2;
+    searchWrap.classList.toggle('is-searching', searching);
+  }
+
+  function buildNetworkSearchLoadingHtml() {
+    return `
+      <div class="chat-contacts__search-loading" role="status" aria-live="polite">
+        <span class="chat-contacts__search-spinner" aria-hidden="true"></span>
+        <span>מחפש משתמשים ברשת…</span>
+      </div>
+    `;
+  }
+
+  /* חלק ארכיון (chat-ui.js) – מעבר לרשימת ארכיון באותה מסגרת כמו וואטסאפ | HYPER CORE TECH */
+  function updateContactsArchiveChrome() {
+    const inArchive = state.contactsView === 'archive';
+    elements.contactsAside?.classList.toggle('chat-contacts--archive-view', inArchive);
+    elements.panel?.classList.toggle('chat-panel--archive-view', inArchive);
+    if (elements.archiveViewBar) {
+      if (inArchive) elements.archiveViewBar.removeAttribute('hidden');
+      else elements.archiveViewBar.setAttribute('hidden', '');
+    }
+    if (elements.archiveRow) {
+      // הסתרה חזקה – videos.css מאלץ display:flex !important על השורה | HYPER CORE TECH
+      if (inArchive) {
+        elements.archiveRow.setAttribute('hidden', '');
+        elements.archiveRow.setAttribute('aria-hidden', 'true');
+        elements.archiveRow.style.setProperty('display', 'none', 'important');
+      } else {
+        elements.archiveRow.removeAttribute('hidden');
+        elements.archiveRow.removeAttribute('aria-hidden');
+        elements.archiveRow.style.removeProperty('display');
+      }
+    }
+    updateArchiveRowUnreadDot();
+  }
+
+  function updateArchiveRowUnreadDot() {
+    if (!elements.archiveRow) return;
+    const contacts = typeof App.getChatContacts === 'function' ? App.getChatContacts() : [];
+    const archivedUnread = contacts.some((c) => c?.archived && (c.unreadCount || 0) > 0);
+    elements.archiveRow.classList.toggle('chat-contacts__archive--has-unread', archivedUnread);
+    // נקודת המסגרת בקצה השורה תמיד גלויה (לא רק כשיש לא נקרא) | HYPER CORE TECH
+    const aside = elements.archiveRow.querySelector('.chat-contacts__archive-aside');
+    if (aside) {
+      aside.style.removeProperty('visibility');
+    }
+  }
+
+  function setContactsView(view) {
+    const next = view === 'archive' ? 'archive' : 'main';
+    if (state.contactsView === next) {
+      updateContactsArchiveChrome();
+      return;
+    }
+    state.contactsView = next;
+    updateContactsArchiveChrome();
+    renderContacts(true);
+  }
+
+  function syncConversationArchiveMenuItems() {
+    const archiveBtn = doc.getElementById('chatMenuArchiveBtn');
+    const unarchiveBtn = doc.getElementById('chatMenuUnarchiveBtn');
+    if (!archiveBtn && !unarchiveBtn) return;
+    const peer = state.activeContact;
+    const archived = peer && typeof App.isChatContactArchived === 'function'
+      ? !!App.isChatContactArchived(peer)
+      : false;
+    if (archiveBtn) {
+      if (archived) archiveBtn.setAttribute('hidden', '');
+      else archiveBtn.removeAttribute('hidden');
+    }
+    if (unarchiveBtn) {
+      if (archived) unarchiveBtn.removeAttribute('hidden');
+      else unarchiveBtn.setAttribute('hidden', '');
+    }
+  }
+
+  function showChatCenterHint(message) {
+    const text = String(message || '').trim();
+    if (!text) return;
+    try {
+      doc.querySelectorAll('.sos-chat-center-hint').forEach((el) => el.remove());
+    } catch (_) {}
+    const hint = doc.createElement('div');
+    hint.className = 'sos-back-exit-hint sos-chat-center-hint';
+    hint.setAttribute('role', 'status');
+    hint.setAttribute('aria-live', 'polite');
+    const span = doc.createElement('span');
+    span.textContent = text;
+    hint.appendChild(span);
+    doc.body.appendChild(hint);
+    requestAnimationFrame(() => {
+      try { hint.classList.add('is-visible'); } catch (_) {}
+    });
+    setTimeout(() => {
+      try { hint.classList.remove('is-visible'); } catch (_) {}
+      setTimeout(() => {
+        try { hint.remove(); } catch (_) {}
+      }, 220);
+    }, 2000);
+  }
+
+  function archiveActiveConversation() {
+    const peer = state.activeContact;
+    if (!peer) return;
+    try {
+      App.setChatContactArchived?.(peer, true);
+    } catch (err) {
+      console.warn('[CHAT/UI] archive failed', err);
+      return;
+    }
+    resetConversationView();
+    if (state.contactsView === 'archive') {
+      renderContacts(true);
+    } else {
+      setContactsView('main');
+      renderContacts(true);
+    }
+    showChatCenterHint('הועבר לארכיון');
+  }
+
+  function unarchiveActiveConversation() {
+    const peer = state.activeContact;
+    if (!peer) return;
+    try {
+      App.setChatContactArchived?.(peer, false);
+    } catch (err) {
+      console.warn('[CHAT/UI] unarchive failed', err);
+      return;
+    }
+    syncConversationArchiveMenuItems();
+    renderContacts(true);
+    showChatCenterHint('הוחזר לרשימת השיחות');
+  }
+
+  function renderContacts(force = false) {
+    if (!elements.contactsList) return;
+    
+    // חלק אופטימיזציה (chat-ui.js) – מניעת רינדור כפול עם throttle | HYPER CORE TECH
+    const now = Date.now();
+    if (!force && now - _lastRenderContactsTime < RENDER_CONTACTS_THROTTLE) {
+      return;
+    }
+    _lastRenderContactsTime = now;
+    updateSearchLoadingUI();
+    
+    const contacts = typeof App.getChatContacts === 'function' ? App.getChatContacts() : [];
+    const unreadTotal = contacts.reduce((sum, item) => sum + (item?.unreadCount || 0), 0);
+    renderChatBadge(unreadTotal);
+    updateContactsArchiveChrome();
+    const inArchiveView = state.contactsView === 'archive';
+    const viewContacts = contacts.filter((contact) => !!contact?.archived === inArchiveView);
+    const normalizedFilter = state.filterText.trim().toLowerCase();
+    const filteredContacts = normalizedFilter
+      ? viewContacts.filter((contact) => {
+          const label = (contact.name || contact.pubkey || '').toLowerCase();
+          const preview = (contact.lastMessage || '').toLowerCase();
+          return label.includes(normalizedFilter) || preview.includes(normalizedFilter);
+        })
+      : viewContacts;
+
+    // חלק חיפוש רשת (chat-ui.js) – ממזג אנשי קשר מקומיים עם תוצאות שם מהרשת | HYPER CORE TECH
+    const localKeys = new Set(
+      filteredContacts.map((c) => String(c?.pubkey || '').toLowerCase()).filter(Boolean)
+    );
+    const networkHits = (!inArchiveView && normalizedFilter.length >= 2)
+      ? (state.networkSearchResults || []).filter((hit) => {
+          const pk = String(hit?.pubkey || '').toLowerCase();
+          return pk && !localKeys.has(pk);
+        })
+      : [];
+    const displayList = filteredContacts.concat(networkHits);
+    const isNetworkSearching = !inArchiveView && state.networkSearchPending && normalizedFilter.length >= 2;
+
+    if (!displayList.length) {
+      if (normalizedFilter && isNetworkSearching) {
+        elements.contactsList.innerHTML = `
+          <div class="chat-contacts__empty chat-contacts__empty--searching" role="status" aria-live="polite">
+            <span class="chat-contacts__search-spinner" aria-hidden="true"></span>
+            <span>מחפש משתמשים ברשת…</span>
+          </div>
+        `;
+        return;
+      }
+      let message = inArchiveView
+        ? 'אין שיחות בארכיון.'
+        : 'עוד אין שיחות. שלח הודעה ראשונה.';
+      if (normalizedFilter) {
+        message = 'לא נמצאו תוצאות התואמות לחיפוש.';
+      }
+      elements.contactsList.innerHTML = `<p class="chat-contacts__empty">${message}</p>`;
+      return;
+    }
+    const fragment = doc.createDocumentFragment();
+    displayList.forEach((contact) => {
+      maybeFetchContactProfile(contact.pubkey, contact);
+      const wrapper = doc.createElement('div');
+      wrapper.innerHTML = buildContactHtml(contact);
+      fragment.appendChild(wrapper.firstElementChild);
+    });
+    elements.contactsList.innerHTML = '';
+    elements.contactsList.appendChild(fragment);
+    if (isNetworkSearching) {
+      const loadingWrap = doc.createElement('div');
+      loadingWrap.innerHTML = buildNetworkSearchLoadingHtml();
+      if (loadingWrap.firstElementChild) {
+        elements.contactsList.appendChild(loadingWrap.firstElementChild);
+      }
+    }
+    refreshContactsP2PIndicators();
+    ensureContactsP2PStatusWiring();
+  }
+
+  function looksLikePhoneQuery(q) {
+    const s = String(q || '').trim();
+    if (!s) return false;
+    // Exact-number lookup only — reject pure prefix browse (too short / letters).
+    if (/[a-zA-Zא-ת]/.test(s)) return false;
+    const digits = s.replace(/\D+/g, '');
+    if (digits.length < 9) return false;
+    return /^[+0-9\s\-().]+$/.test(s);
+  }
+
+  async function runSocallPhoneSearch(rawQuery) {
+    const PN = App.PhoneNormalize || window.SosPhoneNormalize;
+    const GA = App.GlobalAdmission || window.SosGlobalAdmission;
+    if (!PN || typeof PN.normalizePhoneE164 !== 'function' || !GA || typeof GA.lookupPhone !== 'function') {
+      return [];
+    }
+    const norm = PN.normalizePhoneE164(rawQuery);
+    if (!norm.ok) return [];
+    const look = await GA.lookupPhone(norm.e164);
+    if (!look || look.result !== 'OK') return [];
+    if (look.unavailable === true) {
+      return [
+        {
+          pubkey: '',
+          name: 'לא זמין כרגע',
+          picture: '',
+          initials: '—',
+          lastMessage: 'לא ניתן ליצור קשר עם מספר זה כרגע.',
+          fromPhoneSearch: true,
+          unavailable: true,
+          SOCALL_PHONE_SEARCH_REQUIRES_SHARED_COMMUNITY: false,
+        },
+      ];
+    }
+    if (!look.registered || !look.pubkey) return [];
+    const pk = String(look.pubkey).toLowerCase();
+    let name = `משתמש ${pk.slice(0, 8)}`;
+    let picture = '';
+    try {
+      if (typeof App.getProfileDisplay === 'function') {
+        const d = App.getProfileDisplay(pk);
+        if (d && d.name) name = d.name;
+        if (d && d.picture) picture = d.picture;
+      } else if (typeof App.searchProfilesByName === 'function') {
+        // Prefer cached newest-wins profile if already loaded for this pubkey.
+        const cached = App.chatState?.contacts?.get?.(pk);
+        if (cached && cached.name) name = cached.name;
+        if (cached && cached.picture) picture = cached.picture;
+      }
+      if (typeof App.ensureProfileForPubkey === 'function') {
+        const p = await App.ensureProfileForPubkey(pk);
+        if (p && p.name) name = p.name;
+        if (p && (p.picture || p.image)) picture = p.picture || p.image || '';
+      }
+    } catch (_e) {}
+    return [
+      {
+        pubkey: pk,
+        name,
+        picture,
+        initials: typeof App.getInitials === 'function' ? App.getInitials(name) : name.slice(0, 2),
+        lastMessage: 'נמצא לפי מספר טלפון',
+        fromPhoneSearch: true,
+        SOCALL_PHONE_SEARCH_IMPLEMENTED: true,
+        SOCALL_PHONE_SEARCH_REQUIRES_SHARED_COMMUNITY: false,
+        SOCALL_PROFILE_COMMUNITY_SCOPED: false,
+      },
+    ];
+  }
+
+  // חלק חיפוש רשת (chat-ui.js) – שם ברשת + חיפוש טלפון מדויק (SO-CALL) | HYPER CORE TECH
+  async function runNetworkContactSearch(query) {
+    const token = ++state.networkSearchToken;
+    const q = String(query || '').trim();
+    if (q.length < 2) {
+      state.networkSearchResults = [];
+      state.networkSearchPending = false;
+      state.networkSearchQuery = '';
+      updateSearchLoadingUI();
+      renderContacts(true);
+      return;
+    }
+    state.networkSearchPending = true;
+    state.networkSearchQuery = q;
+    updateSearchLoadingUI();
+    renderContacts(true);
+    try {
+      let results = [];
+      if (looksLikePhoneQuery(q)) {
+        results = await runSocallPhoneSearch(q);
+      } else if (typeof App.searchProfilesByName === 'function') {
+        results = await App.searchProfilesByName(q, { limit: 20 });
+      }
+      if (token !== state.networkSearchToken) return;
+      state.networkSearchResults = Array.isArray(results)
+        ? results.filter((r) => r && r.pubkey)
+        : [];
+    } catch (err) {
+      console.warn('[CHAT/UI] network search failed', err && err.message);
+      if (token !== state.networkSearchToken) return;
+      state.networkSearchResults = [];
+    } finally {
+      if (token === state.networkSearchToken) {
+        state.networkSearchPending = false;
+        updateSearchLoadingUI();
+        renderContacts(true);
+      }
+    }
+  }
+
+  // חלק throttle (chat-ui.js) – מניעת renderMessages חוזר מהיר (500ms מינימום) | HYPER CORE TECH
+  let _lastRenderMsgTime = 0;
+  let _pendingRenderMsg = null;
+  let _renderMessagesDepth = 0;
+  const RENDER_MSG_THROTTLE = 180;
+  const INITIAL_VISIBLE_MESSAGES = 20; // חלק צ'אט – חלון פתיחה קל; ישנות בלחיצה | HYPER CORE TECH
+  let _visibleMessageLimit = INITIAL_VISIBLE_MESSAGES;
+  let _renderMessagesPeer = '';
+
+  // חלק בקרה UI טורנט (chat-ui.js) – ה-UI לא מתחיל הורדות היסטוריות בעצמו, רק מציג מצב לפי מנוע ההעברה | HYPER CORE TECH
+
+  function isSimpleChatMessage(message) {
+    if (!message) return false;
+    if (message.attachment) return false;
+    const raw = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!raw) return true;
+    if (raw.startsWith('{') && (raw.includes('torrent-transfer-request') || raw.includes('magnetURI') || raw.includes('infoHash'))) {
+      return false;
+    }
+    if (raw.includes('data:audio') || raw.includes('"type":"voice"') || raw.includes('"kind":"voice"')) {
+      return false;
+    }
+    return true;
+  }
+
+  function renderMessages(peerPubkey, options = {}) {
+    // מניעת רינדור מקונן שמוחק כרטיסים באמצע בנייה | HYPER CORE TECH
+    if (_renderMessagesDepth > 0) {
+      if (_pendingRenderMsg) clearTimeout(_pendingRenderMsg);
+      _pendingRenderMsg = setTimeout(() => {
+        _pendingRenderMsg = null;
+        renderMessages(peerPubkey, { ...options, force: true });
+      }, 0);
+      return;
+    }
+    if (!elements.messagesContainer) return;
+    const normalizedPeer = (peerPubkey || '').toLowerCase();
+    if (normalizedPeer && normalizedPeer !== _renderMessagesPeer) {
+      _renderMessagesPeer = normalizedPeer;
+      _visibleMessageLimit = INITIAL_VISIBLE_MESSAGES;
+    }
+    if (options.loadOlder) {
+      _visibleMessageLimit += INITIAL_VISIBLE_MESSAGES;
+    }
+    if (options.resetLimit) {
+      _visibleMessageLimit = INITIAL_VISIBLE_MESSAGES;
+    }
+    const now = Date.now();
+    if (!options.force && !options.loadOlder && now - _lastRenderMsgTime < RENDER_MSG_THROTTLE) {
+      if (_pendingRenderMsg) clearTimeout(_pendingRenderMsg);
+      _pendingRenderMsg = setTimeout(() => { _pendingRenderMsg = null; renderMessages(peerPubkey, options); }, RENDER_MSG_THROTTLE);
+      return;
+    }
+    _lastRenderMsgTime = now;
+    _renderMessagesDepth += 1;
+    try {
+      _renderMessagesBody(peerPubkey, options);
+    } finally {
+      _renderMessagesDepth = Math.max(0, _renderMessagesDepth - 1);
+    }
+  }
+
+  function _renderMessagesBody(peerPubkey, options = {}) {
+    if (!elements.messagesContainer) return;
+    try {
+      App.refreshDisappearingSystemNotices?.();
+      App.ensureDisappearingIntroNotice?.(peerPubkey);
+    } catch (_) {}
+    const allMessages = typeof App.getChatMessages === 'function' ? App.getChatMessages(peerPubkey) : [];
+
+    // שומרים בועות מדיה שכבר הומרו מהעלאה — מונע קפיצה ברינדור מלא | HYPER CORE TECH
+    const preservedSettled = new Map();
+    // חונים כרטיסי מסמכים מחוץ לקונטיינר לפני wipe — innerHTML לא יכול לאבד אותם | HYPER CORE TECH
+    const parkedFileCards = doc.createDocumentFragment();
+    if (elements.messagesContainer) {
+      elements.messagesContainer.querySelectorAll('.chat-message--file-card-transfer').forEach((el) => {
+        const mid = el.getAttribute('data-message-id');
+        const magnet = el.getAttribute('data-magnet-uri') || '';
+        const tid = el.getAttribute('data-transfer-id') || el.getAttribute('data-torrent-transfer') || '';
+        if (mid) preservedSettled.set(String(mid), el);
+        if (magnet) preservedSettled.set(`mag:${magnet}`, el);
+        if (tid) preservedSettled.set(`tid:${tid}`, el);
+        parkedFileCards.appendChild(el);
+      });
+      settledMediaTransferIds.forEach((fileId) => {
+        const id = String(fileId || '');
+        // mag:... לא מתאים ל-querySelector של data-p2p-file-id (עלול לשבור רינדור) | HYPER CORE TECH
+        if (!id || id.startsWith('mag:')) return;
+        let el = null;
+        try {
+          el = elements.messagesContainer.querySelector(`[data-p2p-file-id="${CSS.escape ? CSS.escape(id) : id.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`);
+        } catch (_) {
+          el = elements.messagesContainer.querySelector(`[data-p2p-file-id="${id}"]`);
+        }
+        const mid = el?.getAttribute?.('data-message-id');
+        if (el && mid) {
+          preservedSettled.set(String(mid), el);
+          el.remove();
+        }
+      });
+    }
+
+    elements.messagesContainer.innerHTML = '';
+    const fragment = doc.createDocumentFragment();
+    // מתמלא אחרי slice לנראות — settled leftovers רק להודעות שמוצגות | HYPER CORE TECH
+    let knownMessageIds = new Set();
+
+    // מחזיר בועות העברה שלא שויכו בלופ — כולל file-card settled אם ההודעה במאגר | HYPER CORE TECH
+    const appendLeftoverTransferBubbles = (target) => {
+      const seen = new Set();
+      preservedSettled.forEach((el) => {
+        if (!el || seen.has(el)) return;
+        const mid = el.getAttribute('data-message-id') || '';
+        const isFileCard =
+          el.classList.contains('chat-message--file-card-transfer') || !!el.querySelector('.chat-file-upload');
+        if (mid) {
+          // settled: מחזירים רק אם ההודעה עדיין במאגר (מונע איבוד אחרי pending/race) | HYPER CORE TECH
+          if (!knownMessageIds.has(String(mid))) return;
+          if (!isFileCard) return;
+        } else if (!isFileCard && !el.querySelector('.chat-media-upload')) {
+          return;
+        }
+        seen.add(el);
+        target.appendChild(el);
+      });
+      return seen.size;
+    };
+
+    if (!allMessages.length) {
+      const leftoverCount = appendLeftoverTransferBubbles(fragment);
+      if (leftoverCount) {
+        elements.messagesContainer.appendChild(fragment);
+        return;
+      }
+      const empty = doc.createElement('p');
+      empty.className = 'chat-conversation__empty';
+      empty.textContent = 'אין הודעות עדיין. כתוב משהו!';
+      fragment.appendChild(empty);
+      elements.messagesContainer.appendChild(fragment);
+      return;
+    }
+    const startIndex = Math.max(0, allMessages.length - _visibleMessageLimit);
+    const messages = allMessages.slice(startIndex);
+    knownMessageIds = new Set(
+      messages.map((m) => (m?.id != null ? String(m.id) : '')).filter(Boolean)
+    );
+    if (startIndex > 0) {
+      const loadOlder = doc.createElement('button');
+      loadOlder.type = 'button';
+      loadOlder.className = 'chat-load-older';
+      loadOlder.textContent = `טען הודעות ישנות יותר (${startIndex})`;
+      loadOlder.addEventListener('click', () => {
+        setChatStickToBottom(false);
+        const prevHeight = elements.messagesContainer.scrollHeight;
+        setConversationHistoryLoading(true, 'טוען...');
+        try {
+          renderMessages(peerPubkey, { loadOlder: true, force: true });
+        } finally {
+          setConversationHistoryLoading(false);
+        }
+        requestAnimationFrame(() => {
+          if (!elements.messagesContainer) return;
+          elements.messagesContainer.scrollTop = Math.max(0, elements.messagesContainer.scrollHeight - prevHeight);
+        });
+      });
+      fragment.appendChild(loadOlder);
+    }
+    // חלק צ'אט (chat-ui.js) – קיבוץ הודעות לפי יום והוספת כותרות תאריך דביקות בסגנון וואטסאפ
+    let lastDayKey = '';
+    messages.forEach((message) => {
+      try {
+      // מקבל: מסתירים מדיה/קובץ טורנט עד שיש blob מוכן — ואז מופיעים לפי createdAt | HYPER CORE TECH
+      if (isIncomingTransferPending(message)) return;
+
+      if (isSystemChatMessage(message)) {
+        const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+        const dayKey = getMessageDayKey(messageTimestamp);
+        if (dayKey && dayKey !== lastDayKey) {
+          lastDayKey = dayKey;
+          const header = doc.createElement('div');
+          header.className = 'chat-date-header';
+          header.setAttribute('data-day-key', dayKey);
+          header.textContent = formatMessageDayHeader(messageTimestamp);
+          fragment.appendChild(header);
+        }
+        fragment.appendChild(buildDisappearingSystemMessageEl(message, peerPubkey));
+        return;
+      }
+
+      const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+      const dayKey = getMessageDayKey(messageTimestamp);
+      if (dayKey && dayKey !== lastDayKey) {
+        lastDayKey = dayKey;
+        const header = doc.createElement('div');
+        header.className = 'chat-date-header';
+        header.setAttribute('data-day-key', dayKey);
+        header.textContent = formatMessageDayHeader(messageTimestamp);
+        fragment.appendChild(header);
+      }
+
+      // בועת העלאה שכבר הומרה — משאירים אותה במקום בלי לבנות מחדש | HYPER CORE TECH
+      const messageIdKey = message?.id != null ? String(message.id) : '';
+      const preserved = messageIdKey ? preservedSettled.get(messageIdKey) : null;
+      if (preserved) {
+        preservedSettled.delete(messageIdKey);
+        const keysToDelete = [];
+        preservedSettled.forEach((el, key) => {
+          if (el === preserved) keysToDelete.push(key);
+        });
+        keysToDelete.forEach((key) => preservedSettled.delete(key));
+        if (
+          messageUsesUnifiedFileCard(message) &&
+          (preserved.classList.contains('chat-message--file-card-transfer') ||
+            preserved.querySelector('.chat-file-upload'))
+        ) {
+          settleFileCardBubble(preserved, message);
+        }
+        fragment.appendChild(preserved);
+        return;
+      }
+      const magnetKey = extractMessageMagnet(message);
+      const tidKey = extractMessageTorrentTransferId(message);
+      // tid/magnet שמורים רק לכרטיסי מסמך — לא לתמונה/וידאו (מונע גניבת כרטיס) | HYPER CORE TECH
+      const preservedByMagnet =
+        magnetKey && messageUsesUnifiedFileCard(message) ? preservedSettled.get(`mag:${magnetKey}`) : null;
+      const preservedByTid =
+        tidKey && messageUsesUnifiedFileCard(message) ? preservedSettled.get(`tid:${tidKey}`) : null;
+      const preservedFile = preservedByMagnet || preservedByTid;
+      if (preservedFile) {
+        const isFileCardEl =
+          preservedFile.classList.contains('chat-message--file-card-transfer') ||
+          !!preservedFile.querySelector('.chat-file-upload');
+        if (isFileCardEl) {
+          if (magnetKey) preservedSettled.delete(`mag:${magnetKey}`);
+          if (tidKey) preservedSettled.delete(`tid:${tidKey}`);
+          // מוחק גם מפתחות כפולים לאותה בועה | HYPER CORE TECH
+          const keysToDelete = [];
+          preservedSettled.forEach((el, key) => {
+            if (el === preservedFile) keysToDelete.push(key);
+          });
+          keysToDelete.forEach((key) => preservedSettled.delete(key));
+          settleFileCardBubble(preservedFile, message);
+          fragment.appendChild(preservedFile);
+          return;
+        }
+      }
+
+      // מסמך/ZIP — מאמצים בועת local-file פתוחה במקום לבנות כרטיס nested בבועה רגילה | HYPER CORE TECH
+      if (messageUsesUnifiedFileCard(message)) {
+        const claimed =
+          takePreservedUnsettledFileCard(preservedSettled, message) ||
+          (messageIdKey ? preservedSettled.get(messageIdKey) : null);
+        const item = claimed || doc.createElement('div');
+        if (claimed) {
+          const keysToDelete = [];
+          preservedSettled.forEach((el, key) => {
+            if (el === claimed) keysToDelete.push(key);
+          });
+          keysToDelete.forEach((key) => preservedSettled.delete(key));
+        }
+        settleFileCardBubble(item, message);
+        fragment.appendChild(item);
+        return;
+      }
+
+      const item = doc.createElement('div');
+      const isOutgoing =
+        message.direction === 'outgoing' || message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+      const directionClass = isOutgoing ? 'chat-message--outgoing' : 'chat-message--incoming';
+      const safeContent = App.escapeHtml ? App.escapeHtml(message.content) : message.content;
+      const rawMessageContent = typeof message.content === 'string' ? message.content.trim() : '';
+      
+      // חלק זיהוי טורנט (chat-ui.js) – זיהוי הודעות העברת קבצים גדולים והצגתן כבועות מיוחדות | HYPER CORE TECH
+      let isTorrentMessage = false;
+      let torrentData = null;
+      try {
+        if (rawMessageContent.includes('torrent-transfer-request') || rawMessageContent.includes('magnetURI') || rawMessageContent.includes('infoHash')) {
+          torrentData = JSON.parse(rawMessageContent);
+          if (torrentData?.type === 'torrent-transfer-request' || (torrentData?.magnetURI && torrentData?.infoHash)) {
+            isTorrentMessage = true;
+            console.log('[CHAT/UI] 🧲 Detected torrent message, size:', torrentData.fileSize, 'isOutgoing:', isOutgoing);
+          }
+        }
+      } catch (e) { /* not JSON */ }
+      
+      // אם זו הודעת טורנט - כרטיס קובץ אחיד (כמו ההעברה) | HYPER CORE TECH
+      if (isTorrentMessage && torrentData) {
+        const torrentFileName = torrentData.fileName || 'קובץ';
+        const torrentFileSize = torrentData.fileSize || 0;
+        const torrentTransferId = torrentData.transferId || message.id;
+        const magnetURI = torrentData.magnetURI || '';
+        const infoHash = torrentData.infoHash || '';
+        const fileSizeFormatted = typeof App.formatFileSize === 'function' ? App.formatFileSize(torrentFileSize) : `${(torrentFileSize / (1024 * 1024)).toFixed(2)} MB`;
+        const fileExt = torrentFileName.split('.').pop()?.toLowerCase() || '';
+        const blobUrl = magnetURI && typeof App.getTorrentBlob === 'function' ? App.getTorrentBlob(magnetURI)?.url : '';
+        const looksImage = /\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(torrentFileName);
+        const looksVideo = /\.(mp4|m4v|mov|webm|mkv|avi|3gp)$/i.test(torrentFileName);
+
+        // מקבל: תמונה/וידאו מוכנים — מציגים מדיה (לא כרטיס קובץ) | HYPER CORE TECH
+        if (!isOutgoing && blobUrl && (looksImage || looksVideo)) {
+          const mediaAtt = {
+            name: torrentFileName,
+            size: torrentFileSize,
+            type: looksVideo ? 'video/mp4' : 'image/jpeg',
+            url: blobUrl,
+            magnetURI,
+            isTorrent: true,
+            isVideo: looksVideo || undefined,
+          };
+          let avatarHtmlTorrent = '';
+          const normalizedFrom = message.from?.toLowerCase?.();
+          const contact = normalizedFrom && App.chatState?.contacts?.get?.(normalizedFrom);
+          const fallbackName = contact?.name || (normalizedFrom ? `משתמש ${normalizedFrom.slice(0, 8)}` : 'משתמש');
+          const safeName = App.escapeHtml ? App.escapeHtml(fallbackName) : fallbackName;
+          const initialsValue =
+            contact?.initials || (typeof App.getInitials === 'function' ? App.getInitials(fallbackName) : 'מש');
+          const safeInitials = App.escapeHtml ? App.escapeHtml(initialsValue) : initialsValue;
+          avatarHtmlTorrent = contact?.picture
+            ? `<span class="chat-message__avatar" title="${safeName}"><img src="${contact.picture}" alt="${safeName}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.parentElement.classList.add('chat-message__avatar--initials'); this.parentElement.textContent='${safeInitials}'; this.remove();"></span>`
+            : `<span class="chat-message__avatar chat-message__avatar--initials" title="${safeName}">${safeInitials}</span>`;
+          const mediaHtml = looksVideo
+            ? (typeof App.renderVideoAttachment === 'function' ? App.renderVideoAttachment(mediaAtt) : '')
+            : (typeof App.renderImageAttachment === 'function' ? App.renderImageAttachment(mediaAtt) : '');
+          const sideDownloadHtml = buildChatFileSideDownloadHtml({
+            attachment: mediaAtt,
+            magnetURI,
+            blobUrl,
+            fileName: torrentFileName,
+          });
+          const sideActionsHtml = buildChatSideActionsHtml({
+            isOutgoing: false,
+            messageId: message.id,
+            downloadHtml: sideDownloadHtml,
+            copyHtml: '',
+          });
+          item.className = `chat-message ${directionClass} chat-message--media`;
+          item.setAttribute('data-message-id', message.id);
+          item.setAttribute('data-torrent-transfer', torrentTransferId);
+          if (magnetURI) item.setAttribute('data-magnet-uri', magnetURI);
+          item.innerHTML = `
+            ${avatarHtmlTorrent}
+            <div class="chat-message__content chat-message__content--has-attachment" data-chat-message="${message.id}">
+              ${mediaHtml}
+              ${buildMessageMetaRowHtml(message, {
+                timeLabel: formatMessageTime(message.createdAt || Math.floor(Date.now() / 1000)),
+                isOutgoing: false,
+                statusHtml: '',
+                timeClass: 'chat-message__time',
+              })}
+            </div>
+            ${sideActionsHtml}
+          `;
+          fragment.appendChild(item);
+          return;
+        }
+
+        let fileIcon = 'fa-file';
+        if (['zip', 'rar', '7z', 'tar', 'gz'].includes(fileExt)) fileIcon = 'fa-file-zipper';
+        else if (['pdf'].includes(fileExt)) fileIcon = 'fa-file-pdf';
+        else if (['doc', 'docx'].includes(fileExt)) fileIcon = 'fa-file-word';
+        else if (['xls', 'xlsx'].includes(fileExt)) fileIcon = 'fa-file-excel';
+
+        let downloadButtonHtml = '';
+        if (!isOutgoing && (blobUrl || magnetURI)) {
+          if (blobUrl) {
+            const safeUrl = App.escapeHtml ? App.escapeHtml(blobUrl) : blobUrl.replace(/"/g, '&quot;');
+            const safeName = App.escapeHtml ? App.escapeHtml(torrentFileName) : torrentFileName;
+            downloadButtonHtml = `<button type="button" class="chat-file-bubble__download" data-download-url="${safeUrl}" data-filename="${safeName}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+          } else {
+            downloadButtonHtml = `<button type="button" class="chat-file-bubble__download torrent-bubble__download-btn" data-magnet="${App.escapeHtml ? App.escapeHtml(magnetURI) : magnetURI}" data-filename="${App.escapeHtml ? App.escapeHtml(torrentFileName) : torrentFileName}" title="הורד" aria-label="הורד"><i class="fa-solid fa-download" aria-hidden="true"></i></button>`;
+          }
+        }
+
+        item.className = `chat-message ${directionClass} chat-message--file-card-transfer chat-message--file-card-settled`;
+        item.setAttribute('data-message-id', message.id);
+        item.setAttribute('data-torrent-transfer', torrentTransferId);
+        if (magnetURI) item.setAttribute('data-magnet-uri', magnetURI);
+        if (infoHash) item.setAttribute('data-info-hash', infoHash);
+
+        const sideDownloadHtml = buildChatFileSideDownloadHtml({
+          attachment: null,
+          magnetURI,
+          blobUrl,
+          fileName: torrentFileName,
+        });
+        const sideActionsHtml = buildChatSideActionsHtml({
+          isOutgoing,
+          messageId: message.id,
+          downloadHtml: sideDownloadHtml,
+          copyHtml: '',
+        });
+
+        item.innerHTML = `
+          ${isOutgoing ? sideActionsHtml : ''}
+          <div class="chat-message__content" data-chat-message="${message.id}">
+            <div class="chat-file-upload" data-chat-file-upload="1">
+              <div class="chat-file-bubble">
+                <div class="chat-file-bubble__icon"><i class="fa-solid ${fileIcon}"></i></div>
+                <div class="chat-file-bubble__info">
+                  ${buildFileNameLabelHtml(torrentFileName)}
+                  <div class="chat-file-bubble__size">${fileSizeFormatted}</div>
+                </div>
+                ${downloadButtonHtml}
+              </div>
+            </div>
+            <div class="chat-message__meta-row">
+              ${buildMessageTransportIndicatorHtml(message)}
+              <span class="chat-message__time">${formatMessageTime(message.createdAt || Math.floor(Date.now() / 1000))}</span>
+              <span class="chat-message__status-slot">${isOutgoing ? buildChatMessageStatusHtml(message.status || 'sent') : ''}</span>
+            </div>
+          </div>
+          ${!isOutgoing ? sideActionsHtml : ''}
+        `;
+
+        fragment.appendChild(item);
+        return;
+      }
+
+      // חלק צ'אט (chat-ui.js) – משחזר אוואטר לשיחות נכנסות על בסיס נתוני איש הקשר
+      // חלק אוואטר יוצא (chat-ui.js) – הוספת תמיכה באוואטר גם להודעות יוצאות (אודיו) | HYPER CORE TECH
+      let avatarHtml = '';
+      if (!isOutgoing) {
+        const normalizedFrom = message.from?.toLowerCase?.();
+        const contact = normalizedFrom && App.chatState?.contacts?.get?.(normalizedFrom);
+        const fallbackName = contact?.name || (normalizedFrom ? `משתמש ${normalizedFrom.slice(0, 8)}` : 'משתמש');
+        const safeName = App.escapeHtml ? App.escapeHtml(fallbackName) : fallbackName;
+        const initialsValue =
+          contact?.initials || (typeof App.getInitials === 'function' ? App.getInitials(fallbackName) : 'מש');
+        const safeInitials = App.escapeHtml ? App.escapeHtml(initialsValue) : initialsValue;
+        avatarHtml = contact?.picture
+          ? `<span class="chat-message__avatar" title="${safeName}"><img src="${contact.picture}" alt="${safeName}" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.parentElement.classList.add('chat-message__avatar--initials'); this.parentElement.textContent='${safeInitials}'; this.remove();"></span>`
+          : `<span class="chat-message__avatar chat-message__avatar--initials" title="${safeName}">${safeInitials}</span>`;
+      }
+      // חלק זיהוי אודיו מקיף (chat-ui.js) – תמיכה בכל פורמטי האודיו הנפוצים PC/Android/iPhone/Apple | HYPER CORE TECH
+      let attachmentHtml = '';
+      let isAudioAttachment = false;
+      let isImageAttachment = false;
+      let isVideoAttachment = false;
+      let a = message.attachment || null;
+      // אחרי הורדת טורנט — מחברים blob מקומי כדי שהמדיה תוצג מיד | HYPER CORE TECH
+      if (a?.magnetURI && !(a.url || a.dataUrl) && typeof App.getTorrentBlob === 'function') {
+        const torrentBlob = App.getTorrentBlob(a.magnetURI);
+        if (torrentBlob?.url) {
+          a = { ...a, url: torrentBlob.url };
+        }
+      }
+      if (a) {
+        const src = a.url || a.dataUrl || '';
+        // תיקון: וודא שה-type מועבר נכון, אחרת נסה לזהות מהשם
+        let mime = (a.type || '').toLowerCase();
+        const fileName = (a.name || '').toLowerCase();
+        // אם אין MIME type, נסה לזהות מהשם
+        if (!mime && fileName.includes('.webm')) mime = 'audio/webm';
+        if (!mime && fileName.includes('.ogg')) mime = 'audio/ogg';
+        if (!mime && fileName.includes('.mp3')) mime = 'audio/mpeg';
+        const srcLower = src.toLowerCase();
+        
+        // רשימת כל סיומות האודיו הנפוצות - PC, Android, iPhone, Apple | HYPER CORE TECH
+        const AUDIO_EXTENSIONS = /\.(mp3|m4a|aac|ogg|oga|opus|wav|wave|webm|flac|wma|aiff|aif|caf|amr|3gp|3gpp|mp4a|m4b|m4p|m4r|alac)$/i;
+        const AUDIO_EXTENSIONS_URL = /\.(mp3|m4a|aac|ogg|oga|opus|wav|wave|webm|flac|wma|aiff|aif|caf|amr|3gp|3gpp|mp4a|m4b|m4p|m4r|alac)(\?|#|$)/i;
+        
+        // בדיקת MIME type - הכי אמין!
+        const isAudioMime = mime.startsWith('audio/') || mime === 'application/ogg';
+        // בדיקת data URL
+        const fromDataUrl = /^data:audio\//i.test(src);
+        // בדיקת סיומת בשם הקובץ (חשוב! Blossom URLs לא מכילים סיומת)
+        const audioExtInName = AUDIO_EXTENSIONS.test(fileName);
+        // בדיקת סיומת ב-URL
+        const audioExtInUrl = AUDIO_EXTENSIONS_URL.test(srcLower);
+        // בדיקת שם קובץ מכיל "voice" או "audio" או "sound"
+        const isVoiceByName = fileName.includes('voice') || fileName.includes('audio') || fileName.includes('sound');
+        // בדיקה נוספת: שם קובץ מסתיים ב-.webm (הודעה קולית נפוצה)
+        const isWebmFile = fileName.endsWith('.webm') || srcLower.includes('.webm');
+        // בדיקת duration - אם יש duration זה הודעה קולית
+        const hasDuration = typeof a.duration === 'number' && a.duration > 0;
+        // בדיקת URL מכיל blossom.band (שרת מדיה) - כל קובץ עם שם voice הוא אודיו
+        const isBlossomAudio = srcLower.includes('blossom.band') && (audioExtInName || isVoiceByName || isWebmFile);
+        // בדיקה נוספת: שם הקובץ מכיל "voice-message" - זה תמיד הודעה קולית!
+        const isVoiceMessage = fileName.includes('voice-message') || fileName.includes('voicemessage');
+        
+        // חלק P2P קול (chat-ui.js) – הודעות P2P-only עם magnetURI בלבד גם נחשבות אודיו | HYPER CORE TECH
+        const hasMagnetURI = !!(a.magnetURI);
+
+        // חלק תיקון וידאו (chat-ui.js) – אם מסומן מפורשות כוידאו, מדלגים על זיהוי אודיו לחלוטין | HYPER CORE TECH
+        if (a.isVideo === true) {
+          isVideoAttachment = typeof App.isVideoAttachment === 'function' ? App.isVideoAttachment(a) : !!src;
+        } else {
+        // זיהוי אודיו: מספיק שאחד מהתנאים מתקיים (src או magnetURI) + תכונת אודיו אמיתית
+        // שים לב: hasMagnetURI לבד אינו מספיק — חייבת להיות גם תכונת אודיו (mime/שם/סיומת/duration)
+        // כדי שקבצי ZIP/PDF עם magnetURI לא יסווגו בטעות כהודעות קוליות!
+        const durableEncryptedVoice =
+          a.type === 'encrypted-media' &&
+          a.resource &&
+          a.resource.transport === 'blossom' &&
+          isVoiceOrAudioChatMessage(a);
+        isAudioAttachment = !!(durableEncryptedVoice || ((src || hasMagnetURI) && (
+          isAudioMime ||           // type: audio/*
+          fromDataUrl ||           // data:audio/*
+          audioExtInName ||        // song.mp3, voice.m4a, etc.
+          isVoiceByName ||         // שם מכיל "voice"/"audio"/"sound"
+          isVoiceMessage ||        // שם מכיל "voice-message" - הכי חשוב!
+          isWebmFile ||            // קובץ .webm (הודעה קולית)
+          hasDuration ||           // יש duration
+          audioExtInUrl ||         // URL מסתיים בסיומת אודיו
+          isBlossomAudio           // Blossom URL עם שם קובץ אודיו
+        )));
+        
+        // חלק מדיה (chat-ui.js) – זיהוי תמונות ווידאו | HYPER CORE TECH
+        if (!isAudioAttachment && typeof App.isImageAttachment === 'function') {
+          isImageAttachment = App.isImageAttachment(a);
+        }
+        if (!isAudioAttachment && !isImageAttachment && typeof App.isVideoAttachment === 'function') {
+          isVideoAttachment = App.isVideoAttachment(a);
+        }
+        } // סוף בלוק isVideo===true
+        // חלק דיבאג מדיה (chat-ui.js) – רישום זיהוי מצורף וסוג מדיה | HYPER CORE TECH
+        mediaDebugLog('attachment-detect', {
+          messageId: message.id,
+          hasAttachment: !!a,
+          name: a?.name || '',
+          mime: a?.type || '',
+          url: a?.url || a?.dataUrl || '',
+          audio: isAudioAttachment,
+          image: isImageAttachment,
+          video: isVideoAttachment
+        });
+        
+        if (isAudioAttachment) {
+          // חלק נגן אודיו (chat-ui.js) – שימוש בנגן משודרג מ-chat-audio-player.js | HYPER CORE TECH
+          // חלק דיבאג מדיה (chat-ui.js) – רינדור אודיו מצורף | HYPER CORE TECH
+          mediaDebugLog('attachment-render', { messageId: message.id, kind: 'audio', name: a?.name || '', mime: a?.type || '', src });
+          attachmentHtml = typeof App.createEnhancedAudioPlayer === 'function'
+            ? App.createEnhancedAudioPlayer(a)
+            : `<div class="chat-message__audio" data-audio><audio preload="metadata" class="chat-message__audio-el" src="${src}" type="${a.type || 'audio/webm'}"></audio></div>`;
+        } else if (isImageAttachment) {
+          // חלק תמונות (chat-ui.js) – הצגת תמונה inline | HYPER CORE TECH
+          // חלק דיבאג מדיה (chat-ui.js) – רינדור תמונה מצורפת | HYPER CORE TECH
+          mediaDebugLog('attachment-render', { messageId: message.id, kind: 'image', name: a?.name || '', mime: a?.type || '', src });
+          attachmentHtml = typeof App.renderImageAttachment === 'function'
+            ? App.renderImageAttachment(a)
+            : `<img src="${src}" alt="${a.name || 'תמונה'}" class="chat-message__image" loading="lazy">`;
+        } else if (isVideoAttachment) {
+          // חלק וידאו (chat-ui.js) – נגן וידאו מוטמע | HYPER CORE TECH
+          // חלק דיבאג מדיה (chat-ui.js) – רינדור וידאו מצורף | HYPER CORE TECH
+          mediaDebugLog('attachment-render', { messageId: message.id, kind: 'video', name: a?.name || '', mime: a?.type || '', src });
+          attachmentHtml = typeof App.renderVideoAttachment === 'function'
+            ? App.renderVideoAttachment(a)
+            : `<video src="${src}" controls class="chat-message__video"></video>`;
+        } else if (typeof App.isPdfAttachment === 'function' && App.isPdfAttachment(a)) {
+          // חלק PDF (chat-ui.js) – תצוגה מקדימה של PDF עם רנדור עמוד ראשון בסגנון WhatsApp | HYPER CORE TECH
+          // חלק דיבאג מדיה (chat-ui.js) – רינדור PDF מצורף | HYPER CORE TECH
+          mediaDebugLog('attachment-render', { messageId: message.id, kind: 'pdf', name: a?.name || '', mime: a?.type || '', src });
+          attachmentHtml = typeof App.renderPdfAttachment === 'function'
+            ? App.renderPdfAttachment(a)
+            : `<div class="chat-file-bubble"><i class="fa-solid fa-file-pdf"></i> ${buildFileNameLabelHtml(a.name || 'PDF')}</div>`;
+        } else if (typeof App.isHtmlAttachment === 'function' && App.isHtmlAttachment(a)) {
+          // חלק HTML (chat-ui.js) – תצוגה מקדימה של דף HTML ב-iframe sandbox בסגנון PDF | HYPER CORE TECH
+          // חלק דיבאג מדיה (chat-ui.js) – רינדור HTML מצורף | HYPER CORE TECH
+          mediaDebugLog('attachment-render', { messageId: message.id, kind: 'html', name: a?.name || '', mime: a?.type || '', src });
+          attachmentHtml = typeof App.renderHtmlAttachment === 'function'
+            ? App.renderHtmlAttachment(a)
+            : `<div class="chat-file-bubble"><i class="fa-solid fa-code"></i> ${buildFileNameLabelHtml(a.name || 'HTML')}</div>`;
+        } else if (typeof App.isGenericFileAttachment === 'function' && App.isGenericFileAttachment(a)) {
+          // חלק קובץ כללי (chat-ui.js) – רנדור בועת קובץ מעוצבת לקבצי ZIP/TXT/טורנט | HYPER CORE TECH
+          // חלק דיבאג מדיה (chat-ui.js) – רינדור קובץ כללי מצורף | HYPER CORE TECH
+          mediaDebugLog('attachment-render', { messageId: message.id, kind: 'file', name: a?.name || '', mime: a?.type || '', src });
+          attachmentHtml = typeof App.renderGenericFileAttachment === 'function'
+            ? App.renderGenericFileAttachment(a)
+            : `<div class="chat-file-bubble"><i class="fa-solid fa-file"></i> ${buildFileNameLabelHtml(a.name || 'קובץ')}</div>`;
+        } else if (src) {
+          const fileName = a.name || 'קובץ מצורף';
+          const fmt =
+            typeof App.formatChatFileDisplayName === 'function'
+              ? App.formatChatFileDisplayName(fileName)
+              : { full: fileName, display: fileName };
+          const safeFull = App.escapeHtml ? App.escapeHtml(fmt.full) : fmt.full;
+          const safeDisplay = App.escapeHtml ? App.escapeHtml(fmt.display) : fmt.display;
+          const extraAttrs = a.url ? 'target="_blank" rel="noopener noreferrer"' : '';
+          // Render-time URL gate — history/rehydrate may skip receive validator | HYPER CORE TECH
+          const safeSrc =
+            typeof App.isSafeIncomingChatResource === 'function' && !App.isSafeIncomingChatResource(src)
+              ? ''
+              : src;
+          const hrefAttr =
+            safeSrc && typeof App.escapeHtml === 'function' ? App.escapeHtml(safeSrc) : safeSrc;
+          // חלק דיבאג מדיה (chat-ui.js) – fallback ללינק מצורף | HYPER CORE TECH
+          mediaDebugLog('attachment-render', { messageId: message.id, kind: 'link', name: fileName, mime: a?.type || '', src: safeSrc || '' });
+          attachmentHtml = hrefAttr
+            ? `
+            <a class="chat-message__attachment" href="${hrefAttr}" ${extraAttrs} download="${safeFull}" title="${safeFull}">
+              <i class="fa-solid fa-paperclip"></i>
+              <span data-full-name="${safeFull}">${safeDisplay}</span>
+            </a>
+          `
+            : `<div class="chat-file-bubble"><i class="fa-solid fa-paperclip"></i> ${safeDisplay}</div>`;
+        }
+      }
+      
+      // חלק YouTube (chat-ui.js) – כרטיס תמונה+כותרת; לחיצה פותחת חיצונית (בלי URL גולמי) | HYPER CORE TECH
+      let youtubeHtml = '';
+      let youtubeRemainingText = '';
+      let youtubeCopyUrl = '';
+      if (!a && rawMessageContent && typeof App.extractYouTubeId === 'function') {
+        const videoId = App.extractYouTubeId(rawMessageContent);
+        if (videoId) {
+          mediaDebugLog('message-youtube-detect', { messageId: message.id, videoId });
+          youtubeHtml = typeof App.renderYouTubeCard === 'function'
+            ? App.renderYouTubeCard(videoId)
+            : '';
+          youtubeCopyUrl = `https://www.youtube.com/watch?v=${videoId}`;
+          youtubeRemainingText = String(rawMessageContent)
+            .replace(/https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/[^\s<>"']+|youtu\.be\/[^\s<>"']+)/gi, '')
+            .trim();
+        }
+      }
+
+      // חלק לינק כללי (chat-ui.js) – כרטיס OG קומפקטי (לא YouTube) | HYPER CORE TECH
+      let linkPreviewHtml = '';
+      let linkPreviewRemainingText = '';
+      let linkCopyUrl = '';
+      if (!a && !youtubeHtml && rawMessageContent && typeof App.extractPreviewableUrl === 'function') {
+        const previewUrl = App.extractPreviewableUrl(rawMessageContent);
+        if (previewUrl && typeof App.renderLinkPreviewCard === 'function') {
+          mediaDebugLog('message-link-preview-detect', { messageId: message.id, url: previewUrl });
+          linkPreviewHtml = App.renderLinkPreviewCard(previewUrl);
+          linkCopyUrl = previewUrl;
+          linkPreviewRemainingText = typeof App.stripPreviewUrlFromText === 'function'
+            ? App.stripPreviewUrlFromText(rawMessageContent, previewUrl)
+            : String(rawMessageContent)
+              .replace(previewUrl, '')
+              .replace(/\s{2,}/g, ' ')
+              .trim();
+        }
+      }
+      
+      // חלק זיהוי מדיה מ-URL (chat-ui.js) – זיהוי לינקי תמונה/וידאו/אודיו בטקסט ההודעה | HYPER CORE TECH
+      let mediaUrlHtml = '';
+      let isMediaUrl = false;
+      let remainingText = rawMessageContent;
+      // חלק זיהוי URL (chat-ui.js) – גם אם יש attachment, נבדוק URLs בטקסט | HYPER CORE TECH
+      if (!youtubeHtml && !linkPreviewHtml && rawMessageContent) {
+        const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg)(\?|#|$)/i;
+        // חלק זיהוי אודיו מקיף (chat-ui.js) – כל פורמטי האודיו PC/Android/iPhone/Apple | HYPER CORE TECH
+        const AUDIO_EXTS = /\.(mp3|m4a|aac|ogg|oga|opus|wav|wave|webm|flac|wma|aiff|aif|caf|amr|3gp|3gpp|mp4a|m4b|m4p|m4r|alac)(\?|#|$)/i;
+        const VIDEO_EXTS = /\.(mp4|ogv|mov|avi|mkv|m4v|wmv|flv|3gp)(\?|#|$)/i;
+        
+        // חיפוש כל ה-URLs בהודעה - משופר לתמוך ב-URLs עם תווים מיוחדים
+        const urlRegex = /(https?:\/\/[^\s<>"']+)/gi;
+        const urls = rawMessageContent.match(urlRegex) || [];
+        const mediaItems = [];
+        
+        urls.forEach(originalUrl => {
+          // ניקוי URL מתווי סיום לא רצויים
+          const url = originalUrl.replace(/[.,;:!?)}\]]+$/, '');
+          
+          // חלק זיהוי אודיו (chat-ui.js) – בדיקה אם זה קובץ אודיו | HYPER CORE TECH
+          const isAudioUrl = AUDIO_EXTS.test(url);
+          
+          if (IMAGE_EXTS.test(url) && !a) {
+            // תמונה — הורדה בעמודת הצד (לא על המדיה) | HYPER CORE TECH
+            mediaItems.push(`
+              <div class="chat-message__image-container">
+                <img 
+                  src="${url}" 
+                  alt="תמונה" 
+                  class="chat-message__image"
+                  loading="lazy"
+                  decoding="async"
+                  referrerpolicy="no-referrer"
+                  onclick="if(typeof App.openImageLightbox==='function')App.openImageLightbox('${url.replace(/'/g, "\\'")}','תמונה',this)"
+                />
+              </div>
+            `);
+            remainingText = remainingText.replace(originalUrl, '').trim();
+            isMediaUrl = true;
+          } else if (isAudioUrl) {
+            // חלק נגן אודיו מקיף (chat-ui.js) – יוצר נגן לכל פורמטי האודיו PC/Android/iPhone/Apple | HYPER CORE TECH
+            const ext = (url.match(/\.(\w+)(?:\?|#|$)/i) || [])[1]?.toLowerCase() || 'mp3';
+            const mimeMap = {
+              mp3: 'audio/mpeg', wav: 'audio/wav', wave: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+              m4a: 'audio/mp4', m4b: 'audio/mp4', m4p: 'audio/mp4', m4r: 'audio/mp4', mp4a: 'audio/mp4', alac: 'audio/mp4',
+              aac: 'audio/aac', webm: 'audio/webm', flac: 'audio/flac', wma: 'audio/x-ms-wma',
+              aiff: 'audio/aiff', aif: 'audio/aiff', caf: 'audio/x-caf', amr: 'audio/amr', '3gp': 'audio/3gpp', '3gpp': 'audio/3gpp'
+            };
+            const mimeType = mimeMap[ext] || 'audio/mpeg';
+            const fileName = decodeURIComponent(url.split('/').pop()?.split('?')[0] || 'קובץ שמע');
+            const fakeAttachment = { url: url, type: mimeType, name: fileName };
+            console.log('[AUDIO] Creating player for URL:', { url: typeof App.diagSafeUrl === 'function' ? App.diagSafeUrl(url) : '[url]', ext, mimeType });
+            mediaItems.push(typeof App.createEnhancedAudioPlayer === 'function'
+              ? App.createEnhancedAudioPlayer(fakeAttachment)
+              : `<div class="chat-message__audio" data-audio data-src="${url}"><audio preload="auto" class="chat-message__audio-el" src="${url}" type="${mimeType}"></audio></div>`);
+            remainingText = remainingText.replace(originalUrl, '').trim();
+            isMediaUrl = true;
+          } else if (VIDEO_EXTS.test(url) && !a) {
+            // וידאו בסגנון וואטסאפ – תקציר + Play למסך מלא | HYPER CORE TECH
+            const fileName = decodeURIComponent(url.split('/').pop()?.split('?')[0] || 'video.mp4');
+            mediaItems.push(
+              typeof App.renderVideoAttachment === 'function'
+                ? App.renderVideoAttachment({ url, type: 'video/mp4', name: fileName })
+                : `<div class="chat-message__video-container" data-chat-video-preview="1"><video class="chat-message__video" preload="metadata" playsinline muted src="${url}"></video></div>`
+            );
+            remainingText = remainingText.replace(originalUrl, '').trim();
+            isMediaUrl = true;
+          }
+        });
+        
+        mediaUrlHtml = mediaItems.join('');
+        // חלק דיבאג מדיה (chat-ui.js) – רינדור מדיה מתוך URLs | HYPER CORE TECH
+        if (mediaItems.length) {
+          mediaDebugLog('message-media-urls', { messageId: message.id, count: mediaItems.length });
+        }
+      }
+
+      item.className = `chat-message ${directionClass}`;
+      item.setAttribute('data-message-id', message.id);
+      item.setAttribute('data-chat-created', String(messageTimestamp));
+      item.setAttribute('data-chat-from', String(message.from || '').toLowerCase());
+      if (a?.fileId) {
+        item.setAttribute('data-transfer-id', a.fileId);
+        item.setAttribute('data-p2p-file-id', a.fileId);
+      }
+      if (a?.magnetURI) item.setAttribute('data-magnet-uri', a.magnetURI);
+      // הורדה ליד הפח (שולח) / במקום הפח (מקבל) לתמונה ווידאו | HYPER CORE TECH
+      let sideDownloadHtml = '';
+      if (isImageAttachment || isVideoAttachment) {
+        sideDownloadHtml = buildChatMediaSideDownloadHtml(a, a?.url || a?.dataUrl || '', a?.name || '');
+      } else if (a && (typeof App.isGenericFileAttachment === 'function' ? App.isGenericFileAttachment(a) : true) && (a.magnetURI || a.url || a.dataUrl)) {
+        sideDownloadHtml = buildChatFileSideDownloadHtml({
+          attachment: a,
+          magnetURI: a.magnetURI || '',
+          fileName: a.name || 'קובץ',
+        });
+      } else if (isMediaUrl && /chat-message__image-container|chat-message__video-container/.test(mediaUrlHtml || '')) {
+        const urlMatch = (rawMessageContent || '').match(/https?:\/\/[^\s<>"']+/i);
+        const mediaUrl = urlMatch ? urlMatch[0].replace(/[.,;:!?)}\]]+$/, '') : '';
+        if (mediaUrl) {
+          const isImgUrl = /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg)(\?|#|$)/i.test(mediaUrl);
+          sideDownloadHtml = buildChatMediaSideDownloadHtml(null, mediaUrl, isImgUrl ? 'תמונה.jpg' : 'video.mp4');
+        }
+      }
+      const sideCopyHtml = buildChatLinkCopyHtml(youtubeCopyUrl || linkCopyUrl);
+      const sideActionsHtml = buildChatSideActionsHtml({
+        isOutgoing,
+        messageId: message.id,
+        downloadHtml: sideDownloadHtml,
+        copyHtml: sideCopyHtml,
+      });
+      // חלק צ'אט (chat-ui.js) – כאשר מצורף קובץ בלבד, לא מציגים שוב את הטקסט "📎 filename" כי הלינק מציג את השם
+      const fileOnlyLabel = a && !isAudioAttachment ? `📎 ${a.name || 'קובץ מצורף'}` : '';
+      const hideTextForFileOnly = !isAudioAttachment && !!attachmentHtml && rawMessageContent === fileOnlyLabel;
+      // חלק מדיה URL / כרטיסי לינק (chat-ui.js) – מסתיר URL גולמי כשיש כרטיס/מדיה | HYPER CORE TECH
+      const textToShow = youtubeHtml
+        ? youtubeRemainingText
+        : (linkPreviewHtml
+          ? linkPreviewRemainingText
+          : (isMediaUrl ? remainingText : rawMessageContent));
+      const safeTextToShow = App.escapeHtml ? App.escapeHtml(textToShow) : textToShow;
+      const hideTextForMediaUrl =
+        (isMediaUrl && !remainingText) ||
+        (!!youtubeHtml && !youtubeRemainingText) ||
+        (!!linkPreviewHtml && !linkPreviewRemainingText);
+      
+      // חלק "המשך קריאה" (chat-ui.js) – קיצור הודעות ארוכות ל-10 שורות עם כפתור הרחבה | HYPER CORE TECH
+      let textHtml = '';
+      if (safeTextToShow && !isAudioAttachment && !hideTextForFileOnly && !hideTextForMediaUrl) {
+        const lines = safeTextToShow.split('\n');
+        const MAX_LINES = 10;
+        const isLongText = lines.length > MAX_LINES;
+        const truncatedContent = isLongText ? lines.slice(0, MAX_LINES).join('\n') : safeTextToShow;
+        const fullContentEscaped = safeTextToShow.replace(/'/g, "\\'").replace(/\n/g, '\\n');
+        
+        if (isLongText) {
+          textHtml = `
+            <span class="chat-message__text chat-message__text--truncated" data-full-text="${fullContentEscaped}" onclick="App.copyMessageToClipboard && App.copyMessageToClipboard(this)">
+              ${truncatedContent.replace(/\n/g, '<br>')}
+              <span class="chat-message__read-more" onclick="event.stopPropagation(); App.expandMessageText && App.expandMessageText(this.parentElement)">להמשך קריאה...</span>
+            </span>
+          `;
+        } else {
+          textHtml = `<span class="chat-message__text" onclick="App.copyMessageToClipboard && App.copyMessageToClipboard(this)">${safeTextToShow.replace(/\n/g, '<br>')}</span>`;
+        }
+      }
+
+      // חלק צ'אט (chat-ui.js) – מצב קומפקטי בסגנון WhatsApp: הודעות קצרות עם שעה+פח על אותה שורה | HYPER CORE TECH
+      const shouldCompactMeta =
+        !a &&
+        rawMessageContent &&
+        rawMessageContent.length <= 60 &&
+        !rawMessageContent.includes('\n') &&
+        Boolean(textHtml);
+      const youtubeOnly = !!youtubeHtml && !textHtml && !attachmentHtml && !mediaUrlHtml && !linkPreviewHtml;
+      const linkPreviewOnly = !!linkPreviewHtml && !textHtml && !attachmentHtml && !mediaUrlHtml && !youtubeHtml;
+      const contentClassName = `chat-message__content${a ? ' chat-message__content--has-attachment' : ''}${
+        shouldCompactMeta ? ' chat-message__content--compact-meta' : ''
+      }${youtubeOnly ? ' chat-message__content--youtube-only' : ''}${
+        linkPreviewOnly ? ' chat-message__content--link-preview-only' : ''
+      }${
+        textHtml && (
+          isImageAttachment ||
+          isVideoAttachment ||
+          (isMediaUrl && /chat-message__image-container|chat-message__video-container/.test(`${attachmentHtml || ''}${mediaUrlHtml || ''}`))
+        ) ? ' chat-message__content--media-caption' : ''
+      }`;
+      
+      // חלק סטטוס הודעות ואטסאפ (chat-ui.js) – וי כפול כמו ואטסאפ | HYPER CORE TECH
+      let statusHtml = isOutgoing ? buildChatMessageStatusHtml(message.status || 'sent') : '';
+      
+      // חלק meta בתוך נגן (chat-ui.js) – הסתרת meta-row לאודיו/וידאו/תמונה והזרקה לתוך המדיה | HYPER CORE TECH
+      const hideMetaForAudio = isAudioAttachment && !textHtml && !youtubeHtml && !linkPreviewHtml && !mediaUrlHtml;
+      const hideMetaForVideo =
+        (isVideoAttachment || (isMediaUrl && /chat-message__video-container/.test(mediaUrlHtml || ''))) &&
+        !textHtml &&
+        !youtubeHtml &&
+        !linkPreviewHtml &&
+        !attachmentHtml?.includes('chat-audio');
+      const hideMetaForImage =
+        (isImageAttachment || (isMediaUrl && /chat-message__image-container/.test((attachmentHtml || '') + (mediaUrlHtml || '')))) &&
+        !textHtml &&
+        !youtubeHtml &&
+        !linkPreviewHtml;
+      const hideMetaForMedia = hideMetaForAudio || hideMetaForVideo || hideMetaForImage;
+      const metaRowHtml = hideMetaForMedia ? '' : buildMessageMetaRowHtml(message, {
+        timeLabel: formatMessageTime(messageTimestamp),
+        isOutgoing,
+        statusHtml,
+        timeClass: 'chat-message__meta',
+      });
+
+      // מדיה (עם/בלי כיתוב) — מסתירים את כל הבועה עד שהמדיה מוכנה; חושפים יחד | HYPER CORE TECH
+      const pendingVisualMedia =
+        !youtubeHtml &&
+        !linkPreviewHtml &&
+        !isAudioAttachment &&
+        (
+          isImageAttachment ||
+          isVideoAttachment ||
+          /is-media-pending|chat-message__image-container|chat-message__video-container/.test(
+            `${attachmentHtml || ''}${mediaUrlHtml || ''}`
+          )
+        );
+      if (pendingVisualMedia) {
+        item.classList.add('chat-message--media-pending');
+      }
+      
+      item.innerHTML = `
+        ${avatarHtml}
+        ${isOutgoing ? sideActionsHtml : ''}
+        <div class="${contentClassName}" data-chat-message="${message.id}">
+          ${attachmentHtml}
+          ${youtubeHtml}
+          ${linkPreviewHtml}
+          ${mediaUrlHtml}
+          ${textHtml}
+          ${metaRowHtml}
+        </div>
+        ${!isOutgoing ? sideActionsHtml : ''}
+      `;
+      // העברת שאריות כפתור הורדה/העתקה לעמודת הצד | HYPER CORE TECH
+      if (sideDownloadHtml || sideCopyHtml || isImageAttachment || isVideoAttachment || isMediaUrl) {
+        ensureChatSideActions(item, {
+          isOutgoing,
+          messageId: message.id,
+          downloadHtml: sideDownloadHtml,
+          copyHtml: sideCopyHtml,
+        });
+      }
+      // חלק חיבור נגנים (chat-ui.js) – חיבור כל נגני האודיו (attachment + URL) | HYPER CORE TECH
+      const contentEl = item.querySelector('[data-chat-message]');
+      if (contentEl && typeof App.wireEnhancedAudioPlayer === 'function') {
+        // חיבור כל נגני האודיו בהודעה
+        const audioWraps = contentEl.querySelectorAll('[data-audio]');
+        audioWraps.forEach(wrap => {
+          App.wireEnhancedAudioPlayer(wrap);
+        });
+      }
+      // חלק כרטיסי לינק (chat-ui.js) – השלמת כותרת/תמונה אחרי רינדור | HYPER CORE TECH
+      if (youtubeHtml && contentEl && typeof App.hydrateYouTubeCards === 'function') {
+        App.hydrateYouTubeCards(contentEl);
+      }
+      if (linkPreviewHtml && contentEl && typeof App.hydrateLinkPreviewCards === 'function') {
+        App.hydrateLinkPreviewCards(contentEl);
+      }
+      // חלק הזרקת meta לנגן (chat-ui.js) – הזרקת שעה וסטטוס לתוך נגן האודיו | HYPER CORE TECH
+      if (hideMetaForAudio && contentEl) {
+        const metaSlot = contentEl.querySelector('.chat-audio-whatsapp__meta-slot');
+        if (metaSlot) {
+          metaSlot.innerHTML = `${buildMessageTransportIndicatorHtml(message)}<span class="chat-audio-whatsapp__msg-time">${formatMessageTime(messageTimestamp)}</span>${statusHtml}`;
+        }
+        // חלק הזרקת תמונת פרופיל לנגן (chat-ui.js) – הזרקת avatar לתוך נגן האודיו | HYPER CORE TECH
+        const avatarSlot = contentEl.querySelector('.chat-audio-whatsapp__avatar-slot');
+        if (avatarSlot) {
+          let playerAvatarHtml = '';
+          if (isOutgoing) {
+            // תמונת פרופיל של המשתמש הנוכחי - חיפוש במקומות שונים
+            const myPubkey = App.publicKey?.toLowerCase?.();
+            const myContact = myPubkey && App.chatState?.contacts?.get?.(myPubkey);
+            const myName = App.userName || App.userDisplayName || App.profile?.name || myContact?.name || 'אני';
+            const safeName = App.escapeHtml ? App.escapeHtml(myName) : myName;
+            const myInitials = typeof App.getInitials === 'function' ? App.getInitials(myName) : myName.slice(0, 2);
+            const safeInitials = App.escapeHtml ? App.escapeHtml(myInitials) : myInitials;
+            // חיפוש תמונת פרופיל במקומות שונים
+            const myPicture = App.userPicture || App.userAvatar || App.profile?.picture || App.profile?.image || myContact?.picture || null;
+            playerAvatarHtml = myPicture
+              ? `<img src="${myPicture}" alt="${safeName}" class="chat-audio-whatsapp__avatar" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.classList.add('chat-audio-whatsapp__avatar--initials'); this.outerHTML='<span class=\\'chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials\\'>${safeInitials}</span>';">`
+              : `<span class="chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials">${safeInitials}</span>`;
+          } else {
+            // תמונת פרופיל של איש הקשר
+            const normalizedFrom = message.from?.toLowerCase?.();
+            const contact = normalizedFrom && App.chatState?.contacts?.get?.(normalizedFrom);
+            const fallbackName = contact?.name || (normalizedFrom ? `משתמש ${normalizedFrom.slice(0, 8)}` : 'משתמש');
+            const safeName = App.escapeHtml ? App.escapeHtml(fallbackName) : fallbackName;
+            const initialsValue = contact?.initials || (typeof App.getInitials === 'function' ? App.getInitials(fallbackName) : 'מש');
+            const safeInitials = App.escapeHtml ? App.escapeHtml(initialsValue) : initialsValue;
+            playerAvatarHtml = contact?.picture
+              ? `<img src="${contact.picture}" alt="${safeName}" class="chat-audio-whatsapp__avatar" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.classList.add('chat-audio-whatsapp__avatar--initials'); this.outerHTML='<span class=\\'chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials\\'>${safeInitials}</span>';">`
+              : `<span class="chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials">${safeInitials}</span>`;
+          }
+          avatarSlot.innerHTML = playerAvatarHtml;
+        }
+      }
+      // חלק וידאו וואטסאפ (chat-ui.js) – שעת הודעה מרחפת על הווידאו למטה־שמאל | HYPER CORE TECH
+      if (hideMetaForVideo && contentEl) {
+        contentEl.querySelectorAll('[data-video-time-slot]').forEach((slot) => {
+          slot.innerHTML = `<span class="chat-message__video-msg-time-text">${formatMessageTime(messageTimestamp)}</span>${statusHtml || ''}`;
+        });
+        contentEl.classList.add('chat-message__content--video-only');
+      }
+      // תמונה בלבד — שעה על המדיה כשתחשף (בלי meta-row שיוצר פס) | HYPER CORE TECH
+      if (hideMetaForImage && contentEl) {
+        contentEl.classList.add('chat-message__content--image-only');
+        contentEl.querySelectorAll('.chat-message__image-container').forEach((imgWrap) => {
+          if (imgWrap.querySelector('[data-image-time-slot]')) return;
+          const slot = document.createElement('span');
+          slot.className = 'chat-message__image-msg-time';
+          slot.setAttribute('data-image-time-slot', '');
+          slot.innerHTML = `<span class="chat-message__image-msg-time-text">${formatMessageTime(messageTimestamp)}</span>${statusHtml || ''}`;
+          imgWrap.appendChild(slot);
+        });
+      }
+      fragment.appendChild(item);
+      } catch (err) {
+        // הודעת מדיה שבורה לא תמחק את שאר השיחה (מסמכים נשארים) | HYPER CORE TECH
+        try {
+          console.warn('[CHAT/UI] render message failed', message?.id, err);
+        } catch (_) {}
+      }
+    });
+    appendLeftoverTransferBubbles(fragment);
+    elements.messagesContainer.appendChild(fragment);
+    // שחזור כפוי — אם כרטיס מסמך נעלם במרוץ רינדור, מחזירים אותו | HYPER CORE TECH
+    ensureUnifiedFileCardsVisible(peerPubkey);
+    setTimeout(() => ensureUnifiedFileCardsVisible(peerPubkey), 50);
+    setTimeout(() => ensureUnifiedFileCardsVisible(peerPubkey), 250);
+
+    // חלק סנכרון כפתור טורנט (chat-ui.js) – מניעת הורדות חוזרות מהיסטוריה אחרי אתחול שיחה | HYPER CORE TECH
+    syncTorrentDownloadButtons();
+
+    // חלק גלילה לתחתית (chat-ui.js) – הדבקה לתחתית גם כשמדיה נחשפת אחרי הקאש | HYPER CORE TECH
+    if (!options.loadOlder) {
+      ensureChatStickScrollWiring();
+      setChatStickToBottom(true);
+      requestAnimationFrame(() => {
+        scrollChatToBottom({ force: true });
+        setTimeout(() => stickChatToBottomIfPinned({ force: true }), 50);
+        setTimeout(() => stickChatToBottomIfPinned({ force: true }), 250);
+      });
+    }
+
+    // חלק צ'אט (chat-ui.js) – איפוס לא-נקראו + RR רק כשצופים בשיחה בחזית | HYPER CORE TECH
+    const activeNormalized = (state.activeContact || '').toLowerCase();
+    const normalized = (peerPubkey || '').toLowerCase();
+    if (activeNormalized && normalized && activeNormalized === normalized
+      && isConversationActivelyViewed(normalized)
+      && typeof App.markChatConversationRead === 'function') {
+      App.markChatConversationRead(normalized);
+    }
+  }
+
+  // חלק הוספת הודעה בודדת (chat-ui.js) – מוסיף הודעה ל-UI ללא רינדור מחדש של הכל | HYPER CORE TECH
+  // הודעה קולית ב-append מיידי — נגן מלא (לא רק טקסט "🎤 הודעה קולית") | HYPER CORE TECH
+  function appendOrUpgradeVoiceMessage(message) {
+    if (!elements.messagesContainer || !message?.id) return false;
+    if (!isVoiceOrAudioChatMessage(message)) return false;
+
+    let a = message.attachment || null;
+    if (a?.magnetURI && !(a.url || a.dataUrl) && typeof App.getTorrentBlob === 'function') {
+      const torrentBlob = App.getTorrentBlob(a.magnetURI);
+      if (torrentBlob?.url) a = { ...a, url: torrentBlob.url };
+    }
+    if (!a) return false;
+
+    const mid = String(message.id);
+    let existing = null;
+    try {
+      existing = elements.messagesContainer.querySelector(
+        `[data-message-id="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(mid) : mid.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`
+      );
+    } catch (_) {
+      existing = elements.messagesContainer.querySelector(`[data-message-id="${mid}"]`);
+    }
+    // כבר יש נגן — לא בונים שוב | HYPER CORE TECH
+    if (existing?.querySelector?.('[data-audio], .chat-audio-whatsapp')) return true;
+    // בועת טקסט/כרטיס שגוי מאותו id — מחליפים בנגן | HYPER CORE TECH
+    if (existing) existing.remove();
+
+    const emptyMsg = elements.messagesContainer.querySelector('.chat-conversation__empty');
+    if (emptyMsg) emptyMsg.remove();
+
+    const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+    const dayKey = getMessageDayKey(messageTimestamp);
+    const headers = elements.messagesContainer.querySelectorAll('.chat-date-header');
+    const lastHeader = headers.length ? headers[headers.length - 1] : null;
+    const lastDayKey = lastHeader?.getAttribute('data-day-key') || '';
+    if (dayKey && dayKey !== lastDayKey) {
+      const header = doc.createElement('div');
+      header.className = 'chat-date-header';
+      header.setAttribute('data-day-key', dayKey);
+      header.textContent = formatMessageDayHeader(messageTimestamp);
+      elements.messagesContainer.appendChild(header);
+    }
+
+    const isOutgoing =
+      message.direction === 'outgoing' || message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+    const directionClass = isOutgoing ? 'chat-message--outgoing' : 'chat-message--incoming';
+    const src = a.url || a.dataUrl || '';
+    const attachmentHtml =
+      typeof App.createEnhancedAudioPlayer === 'function'
+        ? App.createEnhancedAudioPlayer(a)
+        : `<div class="chat-message__audio" data-audio><audio preload="metadata" class="chat-message__audio-el" src="${src}" type="${a.type || 'audio/webm'}"></audio></div>`;
+    if (!attachmentHtml) return false;
+
+    let statusHtml = isOutgoing ? buildChatMessageStatusHtml(message.status || 'sent') : '';
+
+    const sideActionsHtml = buildChatSideActionsHtml({
+      isOutgoing,
+      messageId: message.id,
+      downloadHtml: '',
+      copyHtml: '',
+    });
+
+    const item = doc.createElement('div');
+    item.className = `chat-message ${directionClass}`;
+    item.setAttribute('data-message-id', mid);
+    item.setAttribute('data-chat-created', String(messageTimestamp));
+    item.setAttribute('data-chat-from', String(message.from || '').toLowerCase());
+    if (a.fileId) {
+      item.setAttribute('data-transfer-id', a.fileId);
+      item.setAttribute('data-p2p-file-id', a.fileId);
+    }
+    if (a.magnetURI) item.setAttribute('data-magnet-uri', a.magnetURI);
+
+    item.innerHTML = `
+      ${isOutgoing ? sideActionsHtml : ''}
+      <div class="chat-message__content chat-message__content--has-attachment" data-chat-message="${mid}">
+        ${attachmentHtml}
+      </div>
+      ${!isOutgoing ? sideActionsHtml : ''}
+    `;
+
+    elements.messagesContainer.appendChild(item);
+
+    const contentEl = item.querySelector('[data-chat-message]');
+    if (contentEl && typeof App.wireEnhancedAudioPlayer === 'function') {
+      contentEl.querySelectorAll('[data-audio]').forEach((wrap) => {
+        App.wireEnhancedAudioPlayer(wrap);
+      });
+    }
+    if (contentEl) {
+      const metaSlot = contentEl.querySelector('.chat-audio-whatsapp__meta-slot');
+      if (metaSlot) {
+        metaSlot.innerHTML = `${buildMessageTransportIndicatorHtml(message)}<span class="chat-audio-whatsapp__msg-time">${formatMessageTime(messageTimestamp)}</span>${statusHtml}`;
+      }
+      const avatarSlot = contentEl.querySelector('.chat-audio-whatsapp__avatar-slot');
+      if (avatarSlot) {
+        if (isOutgoing) {
+          const myName = App.profile?.displayName || App.profile?.name || 'אני';
+          const safeName = App.escapeHtml ? App.escapeHtml(myName) : myName;
+          const safeInitials = App.escapeHtml
+            ? App.escapeHtml(typeof App.getInitials === 'function' ? App.getInitials(myName) : 'א')
+            : 'א';
+          const myPicture = App.profile?.picture || '';
+          avatarSlot.innerHTML = myPicture
+            ? `<img src="${myPicture}" alt="${safeName}" class="chat-audio-whatsapp__avatar" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.classList.add('chat-audio-whatsapp__avatar--initials'); this.outerHTML='<span class=\\'chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials\\'>${safeInitials}</span>';">`
+            : `<span class="chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials">${safeInitials}</span>`;
+        } else {
+          const normalizedFrom = message.from?.toLowerCase?.();
+          const contact = normalizedFrom && App.chatState?.contacts?.get?.(normalizedFrom);
+          const fallbackName = contact?.name || (normalizedFrom ? `משתמש ${normalizedFrom.slice(0, 8)}` : 'משתמש');
+          const safeName = App.escapeHtml ? App.escapeHtml(fallbackName) : fallbackName;
+          const initialsValue =
+            contact?.initials || (typeof App.getInitials === 'function' ? App.getInitials(fallbackName) : 'מש');
+          const safeInitials = App.escapeHtml ? App.escapeHtml(initialsValue) : initialsValue;
+          avatarSlot.innerHTML = contact?.picture
+            ? `<img src="${contact.picture}" alt="${safeName}" class="chat-audio-whatsapp__avatar" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="this.classList.add('chat-audio-whatsapp__avatar--initials'); this.outerHTML='<span class=\\'chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials\\'>${safeInitials}</span>';">`
+            : `<span class="chat-audio-whatsapp__avatar chat-audio-whatsapp__avatar--initials">${safeInitials}</span>`;
+        }
+      }
+    }
+
+    stickChatToBottomIfPinned({ force: true });
+    return true;
+  }
+
+  function appendSingleMessage(message) {
+    if (!elements.messagesContainer || !message?.id) return;
+    // קול: בונים/משדרגים נגן — גם אם כבר יש בועת טקסט עם אותו id | HYPER CORE TECH
+    if (isVoiceOrAudioChatMessage(message)) {
+      appendOrUpgradeVoiceMessage(message);
+      return;
+    }
+    if (elements.messagesContainer.querySelector(`[data-message-id="${message.id}"]`)) return;
+
+    // הסר הודעת "אין הודעות" אם קיימת
+    const emptyMsg = elements.messagesContainer.querySelector('.chat-conversation__empty');
+    if (emptyMsg) emptyMsg.remove();
+
+    if (isSystemChatMessage(message)) {
+      const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+      const dayKey = getMessageDayKey(messageTimestamp);
+      const headers = elements.messagesContainer.querySelectorAll('.chat-date-header');
+      const lastHeader = headers.length ? headers[headers.length - 1] : null;
+      const lastDayKey = lastHeader?.getAttribute('data-day-key') || '';
+      if (dayKey && dayKey !== lastDayKey) {
+        const header = doc.createElement('div');
+        header.className = 'chat-date-header';
+        header.setAttribute('data-day-key', dayKey);
+        header.textContent = formatMessageDayHeader(messageTimestamp);
+        elements.messagesContainer.appendChild(header);
+      }
+      elements.messagesContainer.appendChild(
+        buildDisappearingSystemMessageEl(message, message.to || message.from || state.activeContact)
+      );
+      stickChatToBottomIfPinned({ force: true });
+      return;
+    }
+
+    const messageTimestamp = message.createdAt || Math.floor(Date.now() / 1000);
+    const dayKey = getMessageDayKey(messageTimestamp);
+    const headers = elements.messagesContainer.querySelectorAll('.chat-date-header');
+    const lastHeader = headers.length ? headers[headers.length - 1] : null;
+    const lastDayKey = lastHeader?.getAttribute('data-day-key') || '';
+    if (dayKey && dayKey !== lastDayKey) {
+      const header = doc.createElement('div');
+      header.className = 'chat-date-header';
+      header.setAttribute('data-day-key', dayKey);
+      header.textContent = formatMessageDayHeader(messageTimestamp);
+      elements.messagesContainer.appendChild(header);
+    }
+
+    const item = doc.createElement('div');
+    const isOutgoing = message.direction === 'outgoing' || message.from?.toLowerCase?.() === App.publicKey?.toLowerCase?.();
+    const directionClass = isOutgoing ? 'chat-message--outgoing' : 'chat-message--incoming';
+    const rawContent = typeof message.content === 'string' ? message.content : '';
+
+    // חלק כרטיסי לינק (chat-ui.js) – גם ב-append מיידי אחרי שליחה מציגים כרטיס | HYPER CORE TECH
+    let youtubeHtml = '';
+    let linkPreviewHtml = '';
+    let linkCopyUrl = '';
+    let textToShow = rawContent;
+    if (!message.attachment && rawContent && typeof App.extractYouTubeId === 'function') {
+      const videoId = App.extractYouTubeId(rawContent);
+      if (videoId && typeof App.renderYouTubeCard === 'function') {
+        youtubeHtml = App.renderYouTubeCard(videoId);
+        linkCopyUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        textToShow = rawContent
+          .replace(/https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/[^\s<>"']+|youtu\.be\/[^\s<>"']+)/gi, '')
+          .trim();
+      }
+    }
+    if (!message.attachment && !youtubeHtml && rawContent && typeof App.extractPreviewableUrl === 'function') {
+      const previewUrl = App.extractPreviewableUrl(rawContent);
+      if (previewUrl && typeof App.renderLinkPreviewCard === 'function') {
+        linkPreviewHtml = App.renderLinkPreviewCard(previewUrl);
+        linkCopyUrl = previewUrl;
+        textToShow = typeof App.stripPreviewUrlFromText === 'function'
+          ? App.stripPreviewUrlFromText(rawContent, previewUrl)
+          : rawContent
+            .replace(previewUrl, '')
+            .replace(/\s{2,}/g, ' ')
+            .trim();
+      }
+    }
+    const safeContent = App.escapeHtml ? App.escapeHtml(textToShow) : textToShow;
+    
+    // סטטוס הודעה בסגנון ואטסאפ
+    let statusHtml = isOutgoing ? buildChatMessageStatusHtml(message.status || 'sent') : '';
+
+    const sideCopyHtml = buildChatLinkCopyHtml(linkCopyUrl);
+    const sideActionsHtml = buildChatSideActionsHtml({
+      isOutgoing,
+      messageId: message.id,
+      downloadHtml: '',
+      copyHtml: sideCopyHtml,
+    });
+    
+    item.className = `chat-message ${directionClass}`;
+    item.setAttribute('data-message-id', message.id);
+    item.setAttribute('data-chat-created', String(messageTimestamp));
+    item.setAttribute('data-chat-from', String(message.from || '').toLowerCase());
+    
+    const textHtml = safeContent
+      ? `<span class="chat-message__text">${safeContent.replace(/\n/g, '<br>')}</span>`
+      : '';
+    const youtubeOnly = !!youtubeHtml && !textHtml && !linkPreviewHtml;
+    const linkPreviewOnly = !!linkPreviewHtml && !textHtml && !youtubeHtml;
+    let contentClass = 'chat-message__content';
+    if (youtubeOnly) contentClass += ' chat-message__content--youtube-only';
+    else if (linkPreviewOnly) contentClass += ' chat-message__content--link-preview-only';
+    else if (!youtubeHtml && !linkPreviewHtml && safeContent.length <= 60 && !safeContent.includes('\n')) {
+      contentClass += ' chat-message__content--compact-meta';
+    }
+    
+    item.innerHTML = `
+      ${isOutgoing ? sideActionsHtml : ''}
+      <div class="${contentClass}" data-chat-message="${message.id}">
+        ${textHtml}
+        ${youtubeHtml}
+        ${linkPreviewHtml}
+        ${buildMessageMetaRowHtml(message, {
+          timeLabel: formatMessageTime(messageTimestamp),
+          isOutgoing,
+          statusHtml,
+          timeClass: 'chat-message__meta',
+        })}
+      </div>
+      ${!isOutgoing ? sideActionsHtml : ''}
+    `;
+    
+    elements.messagesContainer.appendChild(item);
+    if (youtubeHtml && typeof App.hydrateYouTubeCards === 'function') {
+      App.hydrateYouTubeCards(item);
+    }
+    if (linkPreviewHtml && typeof App.hydrateLinkPreviewCards === 'function') {
+      App.hydrateLinkPreviewCards(item);
+    }
+    stickChatToBottomIfPinned({ force: true });
+  }
+
+  // חלק עדכון סטטוס הודעה (chat-ui.js) – מעדכן סטטוס הודעה קיימת ללא רינדור מחדש | HYPER CORE TECH
+  function updateMessageStatus(tempId, newStatus, realId) {
+    if (!elements.messagesContainer) return;
+    
+    const messageEl = elements.messagesContainer.querySelector(`[data-message-id="${tempId}"]`);
+    if (!messageEl) return;
+    
+    // עדכן ID אם קיבלנו ID אמיתי
+    if (realId) {
+      messageEl.setAttribute('data-message-id', realId);
+      const contentEl = messageEl.querySelector('[data-chat-message]');
+      if (contentEl) contentEl.setAttribute('data-chat-message', realId);
+    }
+    
+    // עדכן אייקון סטטוס בסגנון ואטסאפ
+    const statusEl = messageEl.querySelector('.chat-message__status');
+    const html = buildChatMessageStatusHtml(newStatus);
+    if (statusEl) {
+      statusEl.outerHTML = html;
+      return;
+    }
+    const meta = messageEl.querySelector('.chat-file-card__meta, .chat-message__meta-row, .chat-audio-whatsapp__meta-slot, .chat-media-upload__ring-slot');
+    if (!meta) return;
+    let slot = meta.classList && meta.classList.contains('chat-message__status-slot')
+      ? meta
+      : meta.querySelector('.chat-message__status-slot');
+    if (!slot) {
+      slot = doc.createElement('span');
+      slot.className = 'chat-message__status-slot';
+      meta.appendChild(slot);
+    }
+    slot.innerHTML = html;
+  }
+
+  function clearChatContactsSearch() {
+    const hadSearch =
+      !!(state.filterText || state.networkSearchQuery || (state.networkSearchResults || []).length);
+    state.filterText = '';
+    state.networkSearchPending = false;
+    state.networkSearchResults = [];
+    state.networkSearchQuery = '';
+    state.networkSearchToken += 1;
+    if (elements.searchInput) {
+      elements.searchInput.value = '';
+    }
+    try {
+      updateSearchLoadingUI();
+    } catch (_) {}
+    try {
+      syncChatSearchKeyboardNav();
+    } catch (_) {}
+    if (hadSearch) {
+      // דוחים רינדור רשימה — לא לחסום פתיחת שיחה / מקלדת | HYPER CORE TECH
+      const deferRender = () => {
+        try {
+          if (!state.isOpen) return;
+          renderContacts(true);
+        } catch (_) {}
+      };
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(deferRender, { timeout: 600 });
+      } else {
+        setTimeout(deferRender, 180);
+      }
+    }
+  }
+
+  function showConversation(peerPubkey, contact) {
+    // בחירת שיחה (גם מתוצאת חיפוש) — מנקים חיפוש כדי שבחזרה תופיע הרשימה המלאה | HYPER CORE TECH
+    clearChatContactsSearch();
+    state.activeContact = peerPubkey;
+    elements.panel.classList.add('chat-panel--conversation');
+    try {
+      const key = typeof App.getConversationKey === 'function' ? App.getConversationKey(peerPubkey, App.publicKey || '') : '';
+      const count = typeof App.getChatMessages === 'function' ? (App.getChatMessages(peerPubkey) || []).length : 0;
+      console.log('[CHAT/PERSIST] OPEN_THREAD peer=' + String(peerPubkey || '').slice(0, 8) + ' conversationKey=' + key + ' messageCount=' + count);
+    } catch (_) {}
+    updatePanelMode(PANEL_MODES.CONVERSATION);
+    setFooterMode('contacts');
+    elements.notificationsSection?.setAttribute('hidden', '');
+    if (elements.emptyState) {
+      elements.emptyState.setAttribute('hidden', '');
+    }
+    elements.conversationHeader?.removeAttribute('hidden');
+    elements.composer?.removeAttribute('hidden');
+    elements.messagesContainer?.removeAttribute('hidden');
+    ensureChatStickScrollWiring();
+    setChatStickToBottom(true);
+    if (elements.messageInput) {
+      elements.messageInput.value = '';
+      elements.messageInput.style.height = '';
+      // חלק צ'אט (chat-ui.js) – לא מפעיל focus אוטומטי כדי שהמקלדת לא תיפתח ללא לחיצה יזומה
+    }
+    noteKeyboardClosedBaseline();
+    schedulePositionPanel(true);
+    // אתחול מחדש של כפתור מיקרופון במובייל כשהשיחה נפתחת
+    if (typeof App.initializeChatVoiceUI === 'function') {
+      setTimeout(() => {
+        App.initializeChatVoiceUI({
+          getActivePeer: () => state.activeContact,
+          getMessageDraft: () => elements.messageInput?.value || '',
+          composerElement: elements.composer,
+        });
+      }, 100);
+    }
+    updateActiveConversationHeader(peerPubkey);
+    syncConversationArchiveMenuItems();
+    // חלק סטטוס P2P (chat-ui.js) – מציג מצב חיבור DC בכותרת שיחה כדי שהמשתמש ידע אם ההודעות עוברות P2P | HYPER CORE TECH
+    if (elements.conversationStatus) {
+      updateConversationDCStatus(peerPubkey);
+    }
+    syncLocalPresenceViewing(peerPubkey);
+    // ספינר כרמז ברקע בלבד — טקסט/מערכת מוצגים מיד; מדיה ממשיכה להופיע כשמוכנה | HYPER CORE TECH
+    setConversationHistoryLoading(true, 'טוען...');
+    const peerForRender = peerPubkey;
+    requestAnimationFrame(() => {
+      if (state.activeContact !== peerForRender) {
+        setConversationHistoryLoading(false);
+        return;
+      }
+      try {
+        renderMessages(peerForRender, { resetLimit: true, force: true });
+      } catch (_) {}
+      const settleCards = () => {
+        if (state.activeContact !== peerForRender) return;
+        try { ensureUnifiedFileCardsVisible(peerForRender); } catch (_) {}
+      };
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(settleCards, { timeout: 400 });
+      } else {
+        setTimeout(settleCards, 120);
+      }
+      // הספינר נשאר רק כל עוד יש מדיה ממתינה — בלי להסתיר הודעות שכבר על המסך | HYPER CORE TECH
+      const hideSpinnerWhenReady = () => {
+        if (state.activeContact !== peerForRender) {
+          setConversationHistoryLoading(false);
+          return;
+        }
+        const pending = elements.messagesContainer?.querySelector(
+          '.chat-message--media-pending, .is-media-pending'
+        );
+        if (!pending) {
+          setConversationHistoryLoading(false);
+          return;
+        }
+        setTimeout(hideSpinnerWhenReady, 280);
+      };
+      setTimeout(hideSpinnerWhenReady, 80);
+      setTimeout(() => {
+        if (state.activeContact === peerForRender) setConversationHistoryLoading(false);
+      }, 4500);
+    });
+    App.markChatConversationRead(peerPubkey);
+    if (typeof App.setChatFileTransferActivePeer === 'function') {
+      App.setChatFileTransferActivePeer(peerPubkey);
+    }
+    // חלק P2P DataChannel (chat-ui.js) – חיבור DataChannel כשפותחים שיחה | HYPER CORE TECH
+    if (App.dataChannel && typeof App.dataChannel.connect === 'function') {
+      App.dataChannel.connect(peerPubkey);
+    }
+    try {
+      if (typeof App.sosBackSync === 'function') App.sosBackSync();
+    } catch (_) {}
+  }
+
+  // חלק סטטוס (chat-ui.js) – נוכחות מתחת לשם; מנורת P2P על האווטאר בלבד | HYPER CORE TECH
+  let _headerStatusTimer = null;
+  function clearConversationStatusTone(el) {
+    if (!el || !el.classList) return;
+    el.classList.remove(
+      'chat-conversation__status--online',
+      'chat-conversation__status--recent',
+      'chat-conversation__status--older',
+      'chat-conversation__status--stale',
+      'chat-conversation__status--unknown'
+    );
+  }
+
+  function updateConversationPresence(peerPubkey) {
+    const el = elements.conversationStatus;
+    if (!el) return;
+    if (elements.conversationHeader?.classList.contains('is-loading-history')) return;
+    if (el.classList.contains('chat-conversation__status--loading')) return;
+    const pk = peerPubkey || state.activeContact;
+    if (!pk) {
+      clearConversationStatusTone(el);
+      el.textContent = '';
+      return;
+    }
+    const presence = typeof App.getChatPresence === 'function' ? App.getChatPresence(pk) : null;
+    const formatted = typeof App.formatChatPresence === 'function'
+      ? App.formatChatPresence(presence || pk)
+      : { text: '', tone: 'unknown' };
+    clearConversationStatusTone(el);
+    const toneClass = typeof App.presenceToneClass === 'function'
+      ? App.presenceToneClass(formatted.tone)
+      : 'chat-conversation__status--unknown';
+    el.classList.add(toneClass);
+    el.textContent = formatted.text || '';
+    el.removeAttribute('title');
+  }
+
+  function updateConversationP2PIndicator(peerPubkey) {
+    const pk = peerPubkey || state.activeContact;
+    const avatar = elements.conversationAvatar;
+    if (!avatar) return;
+    const on = !!(pk && isPeerP2PConnected(pk));
+    avatar.classList.toggle('chat-conversation__avatar--p2p', on);
+    avatar.setAttribute('data-p2p', on ? '1' : '0');
+    const baseTitle = (avatar.getAttribute('title') || '')
+      .replace(/\s*·\s*P2P ישיר\s*$/u, '')
+      .trim();
+    avatar.title = on ? `${baseTitle || 'משתמש'} · P2P ישיר` : baseTitle;
+    refreshContactsP2PIndicators();
+  }
+
+  function updateConversationDCStatus(peerPubkey) {
+    if (_headerStatusTimer) { clearInterval(_headerStatusTimer); _headerStatusTimer = null; }
+    const update = () => {
+      if (elements.conversationHeader?.classList.contains('is-loading-history')) return;
+      const el = elements.conversationStatus;
+      if (el && el.classList.contains('chat-conversation__status--loading')) return;
+      const pk = peerPubkey || state.activeContact;
+      updateConversationPresence(pk);
+      updateConversationP2PIndicator(pk);
+    };
+    update();
+    _headerStatusTimer = setInterval(() => {
+      if (state.activeContact) update();
+      else { clearInterval(_headerStatusTimer); _headerStatusTimer = null; }
+    }, 3000);
+  }
+
+  App.getActiveChatPeer = function getActiveChatPeer() {
+    return state.activeContact || null;
+  };
+  App.getChatPresenceViewedPeer = function getChatPresenceViewedPeer() {
+    if (!state.activeContact) return '';
+    if (!elements.panel || elements.panel.hasAttribute('hidden')) return '';
+    if (!elements.panel.classList.contains('chat-panel--conversation')) return '';
+    try {
+      if (doc.hidden || doc.visibilityState === 'hidden') return '';
+    } catch (_) {}
+    if (elements.conversationHeader && elements.conversationHeader.hasAttribute('hidden')) return '';
+    return String(state.activeContact).toLowerCase();
+  };
+  App.updateConversationPresence = updateConversationPresence;
+  App.updateConversationP2PIndicator = updateConversationP2PIndicator;
+
+  function syncLocalPresenceViewing(peerPubkey) {
+    try {
+      if (typeof App.setChatPresenceViewing !== 'function') return;
+      if (peerPubkey) App.setChatPresenceViewing(peerPubkey, true);
+      else if (typeof App.leaveChatPresenceViewing === 'function') App.leaveChatPresenceViewing('ui-leave');
+      else App.setChatPresenceViewing('', false);
+    } catch (_) {}
+  }
+
+  // חלק P2P ברשימה (chat-ui.js) – מסגרת ירוקה סביב אווטאר כשיש DataChannel פעיל | HYPER CORE TECH
+  let _contactsP2PTimer = null;
+  function refreshContactsP2PIndicators() {
+    const list = elements.contactsList;
+    if (!list) return;
+    list.querySelectorAll('[data-chat-contact]').forEach((row) => {
+      const pk = row.getAttribute('data-chat-contact');
+      const avatar = row.querySelector('.chat-contact__avatar');
+      if (!pk || !avatar) return;
+      const on = isPeerP2PConnected(pk);
+      const wasOn = avatar.classList.contains('chat-contact__avatar--p2p');
+      if (on === wasOn && avatar.getAttribute('data-p2p') === (on ? '1' : '0')) return;
+      avatar.classList.toggle('chat-contact__avatar--p2p', on);
+      avatar.setAttribute('data-p2p', on ? '1' : '0');
+      const baseTitle = (avatar.getAttribute('title') || '')
+        .replace(/\s*·\s*P2P ישיר\s*$/u, '')
+        .trim();
+      avatar.title = on ? `${baseTitle || 'משתמש'} · P2P ישיר` : baseTitle;
+    });
+  }
+
+  function ensureContactsP2PStatusWiring() {
+    if (_contactsP2PTimer) return;
+    _contactsP2PTimer = setInterval(() => {
+      if (!elements.panel || elements.panel.hasAttribute('hidden')) return;
+      if (state.footerMode === 'notifications') return;
+      refreshContactsP2PIndicators();
+    }, 3000);
+  }
+
+  function resetConversationView() {
+    const prevPeer = state.activeContact;
+    if (prevPeer) {
+      try {
+        const count = typeof App.getChatMessages === 'function' ? (App.getChatMessages(prevPeer) || []).length : 0;
+        console.log('[CHAT/PERSIST] CLOSE_THREAD peer=' + String(prevPeer).slice(0, 8) + ' messageCount=' + count);
+        if (typeof App.flushChatPersist === 'function') App.flushChatPersist();
+      } catch (_) {}
+      syncLocalPresenceViewing(null);
+    }
+    state.activeContact = null;
+    try { setConversationHistoryLoading(false); } catch (_) {}
+    elements.panel.classList.remove('chat-panel--conversation');
+    setFooterMode('contacts');
+    elements.conversationHeader?.setAttribute('hidden', '');
+    elements.composer?.setAttribute('hidden', '');
+    if (elements.emptyState) {
+      elements.emptyState.removeAttribute('hidden');
+    }
+    if (elements.messagesContainer) {
+      elements.messagesContainer.innerHTML = '';
+      elements.messagesContainer.setAttribute('hidden', '');
+    }
+    elements.notificationsSection?.setAttribute('hidden', '');
+    if (typeof App.clearChatFileTransferUI === 'function') {
+      App.clearChatFileTransferUI();
+    }
+    updatePanelMode(PANEL_MODES.LIST);
+    // חזרה לרשימת שיחות אחרי deep-link – מחזירים את התפריט התחתון | HYPER CORE TECH
+    ensureContactsP2PStatusWiring();
+    refreshContactsP2PIndicators();
+    try {
+      if (typeof App.clearSosDeepLinkFlags === 'function') App.clearSosDeepLinkFlags();
+      else {
+        document.documentElement.removeAttribute('data-sos-deeplink');
+        document.body.classList.remove('sos-deeplink-chat');
+      }
+    } catch (_) {}
+    try {
+      if (typeof App.sosBackSync === 'function') App.sosBackSync();
+    } catch (_) {}
+  }
+
+  function handleContactClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.target.closest('[data-chat-contact]');
+    if (!target) return;
+    const peerPubkey = target.getAttribute('data-chat-contact');
+    if (!peerPubkey) return;
+    const normalized = peerPubkey.toLowerCase();
+    let contact = App.chatState?.contacts?.get?.(normalized) || null;
+    // חלק חיפוש רשת (chat-ui.js) – לחיצה על תוצאת רשת מוסיפה איש קשר ופותחת שיחה | HYPER CORE TECH
+    if (!contact) {
+      const net = (state.networkSearchResults || []).find(
+        (item) => String(item?.pubkey || '').toLowerCase() === normalized
+      );
+      if (net && typeof App.ensureChatContact === 'function') {
+        contact = App.ensureChatContact(normalized, {
+          name: net.name,
+          picture: net.picture || '',
+          initials: net.initials || '',
+        });
+      } else if (typeof App.addChatContact === 'function') {
+        contact = App.addChatContact(normalized);
+      }
+    }
+    showConversation(peerPubkey, contact);
+    renderContacts(true);
+  }
+
+  // חלק שליחה אופטימיסטית (chat-ui.js) – שליחה מיידית ללא המתנה לרשת | HYPER CORE TECH
+  function handleSendMessage(event) {
+    event.preventDefault();
+    if (!state.activeContact) {
+      return;
+    }
+    const value = elements.messageInput?.value || '';
+    const hasAttachment =
+      typeof App.hasChatFileAttachment === 'function' && App.hasChatFileAttachment(state.activeContact);
+    if (!value.trim() && !hasAttachment) {
+      return;
+    }
+    
+    // 1. נקה input מיד - תגובה מיידית למשתמש
+    const messageText = value;
+    elements.messageInput.value = '';
+    // חלק גובה קלט (chat-ui.js) – value='' לא מפעיל input, מאפסים גובה שתפח בזמן הקלדה | HYPER CORE TECH
+    elements.messageInput.style.height = '';
+    elements.messageInput.disabled = false;
+    // חלק שמירת מקלדת (chat-ui.js) – שמירה על פוקוס ב-input אחרי שליחה כדי שהמקלדת תישאר פתוחה במובייל | HYPER CORE TECH
+    elements.messageInput.focus();
+    
+    // 2. הודעה זמנית ב-state (מפעיל UI פעם אחת דרך subscribe) | HYPER CORE TECH
+    const tempId = 'temp-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    const tempMessage = {
+      id: tempId,
+      from: App.publicKey,
+      to: state.activeContact,
+      content: messageText,
+      createdAt: Math.floor(Date.now() / 1000),
+      direction: 'outgoing',
+      status: 'sending'
+    };
+    if (typeof App.appendChatMessage === 'function') {
+      App.appendChatMessage(tempMessage);
+    } else {
+      appendSingleMessage(tempMessage);
+    }
+    
+    // 3. שלח ברקע – מחליף את ה-temp במקום ליצור הודעה שנייה | HYPER CORE TECH
+    App.publishChatMessage(state.activeContact, messageText, { clientTempId: tempId })
+      .then((result) => {
+        if (!result?.ok) {
+          console.warn('Failed to send chat message', result?.error);
+          updateMessageStatus(tempId, 'failed');
+          if (typeof App.updateChatMessageStatus === 'function') {
+            App.updateChatMessageStatus(tempId, 'failed');
+          }
+        } else {
+          // אם ההחלפה כבר עדכנה את ה-DOM ל-ID אמיתי – מעדכנים סטטוס על ה-ID החדש | HYPER CORE TECH
+          const statusTargetId = result.messageId || tempId;
+          updateMessageStatus(statusTargetId, 'sent', result.messageId);
+          if (result.messageId && result.messageId !== tempId) {
+            const tempEl = elements.messagesContainer?.querySelector(`[data-message-id="${tempId}"]`);
+            if (tempEl) tempEl.remove();
+          }
+        }
+      })
+      .catch((err) => {
+        console.error('Chat send error', err);
+        updateMessageStatus(tempId, 'failed');
+        if (typeof App.updateChatMessageStatus === 'function') {
+          App.updateChatMessageStatus(tempId, 'failed');
+        }
+      });
+  }
+
+  function handleAddContact(event) {
+    event.preventDefault();
+    const value = elements.addContactInput?.value?.trim?.();
+    if (!value) {
+      return;
+    }
+    const contact = App.addChatContact?.(value);
+    if (contact) {
+      renderContacts();
+      showConversation(contact.pubkey, contact);
+      elements.addContactInput.value = '';
+      togglePanel(true);
+    }
+  }
+
+  function subscribeToEvents() {
+    if (elements.navButton) {
+      elements.navButton.addEventListener('click', () => {
+        // בדיקת מצב אורח - חסימת הודעות למשתמשים לא מחוברים | HYPER CORE TECH
+        if (App && typeof App.requireAuth === 'function') {
+          if (!App.requireAuth('כדי לשלוח הודעות צריך להתחבר או להירשם.')) {
+            return;
+          }
+        }
+        // סגירת פאנל פרופיל אם פתוח | HYPER CORE TECH
+        if (typeof App.closeProfilePanel === 'function') {
+          App.closeProfilePanel();
+        }
+        
+        // לוגיקה הגיונית: פתוח בשיחות→סגור, פתוח בהתראות→עבור לשיחות, סגור→פתח שיחות
+        if (state.isOpen) {
+          if (state.footerMode === 'contacts' || state.footerMode === 'home') {
+            // כבר בטאב שיחות - סגור
+            togglePanel(false);
+          } else {
+            // בטאב אחר (התראות) - עבור לשיחות
+            setFooterMode('contacts');
+            state.activeContact = null;
+            resetConversationView();
+            renderContacts();
+            updatePanelMode(PANEL_MODES.LIST);
+            // עדכון כפתור התראות
+            if (elements.notificationsToggle) {
+              elements.notificationsToggle.classList.remove('is-active');
+            }
+          }
+        } else {
+          // הפאנל סגור - פתח בטאב שיחות
+          setFooterMode('contacts');
+          togglePanel(true);
+        }
+      });
+    }
+
+    // חלק התראות (chat-ui.js) – המאזין לכפתור ההתראות מטופל על ידי feed.js שמפנה ל-openNotificationsPanel | HYPER CORE TECH
+    // המאזין הוסר כדי למנוע כפילות - feed.js מטפל בלחיצה ומפנה לכאן דרך App.openNotificationsPanel
+
+    if (elements.launcherButton) {
+      elements.launcherButton.addEventListener('click', () => togglePanel());
+    }
+    if (elements.closeButton) {
+      elements.closeButton.addEventListener('click', () => togglePanel(false));
+    }
+    // האזנה לכפתור סגירה החדש בסיידבר (דסקטופ) | HYPER CORE TECH
+    const sidebarCloseBtn = doc.getElementById('chatSidebarCloseBtn');
+    if (sidebarCloseBtn) {
+      sidebarCloseBtn.addEventListener('click', () => togglePanel(false));
+    }
+    doc.addEventListener('click', (event) => {
+      if (!state.isOpen) return;
+      // הורדה יוצרת a.click() סינתטי מחוץ לפאנל – לא לסגור את הצ'אט | HYPER CORE TECH
+      if (App.__sosSuppressChatOutsideClose) return;
+      // חלק שיחות קול (chat-ui.js) – התעלמות מלחיצות על דיאלוג שיחת קול/וידיאו כדי לא לסגור את הצ'אט | HYPER CORE TECH
+      const voiceCallDialog = doc.getElementById('voiceCallDialog');
+      const videoCallDialog = doc.getElementById('videoCallDialog');
+      if (voiceCallDialog && voiceCallDialog.contains(event.target)) return;
+      if (videoCallDialog && videoCallDialog.contains(event.target)) return;
+      // lightbox / כפתורי הורדה / לינק הורדה זמני | HYPER CORE TECH
+      if (event.target.closest?.('#chatImageLightbox, .chat-lightbox, .chat-media-modal, .chat-message__media-download, .chat-lightbox__download, .chat-file-bubble__download, .chat-pdf-bubble__download, a[download], [data-sos-download-link]')) return;
+      if (
+        elements.panel.contains(event.target) ||
+        (elements.navButton && elements.navButton.contains(event.target)) ||
+        (elements.launcherButton && elements.launcherButton.contains(event.target))
+      ) {
+        return;
+      }
+      togglePanel(false);
+    });
+    window.addEventListener('resize', () => {
+      schedulePositionPanel();
+    });
+    // לא מאזינים ל-scroll של החלון – גורם לגרירת מקלדת איטית | HYPER CORE TECH
+    if (elements.contactsList) {
+      elements.contactsList.addEventListener('click', handleContactClick);
+    }
+    if (elements.archiveRow) {
+      elements.archiveRow.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setContactsView('archive');
+      });
+    }
+    if (elements.archiveViewBack) {
+      elements.archiveViewBack.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setContactsView('main');
+      });
+    }
+    if (elements.refreshContacts) {
+      elements.refreshContacts.addEventListener('click', () => {
+        // חלק רענון שיחות (chat-ui.js) – איפוס חותמת זמן וטעינה מחדש של כל השיחות | HYPER CORE TECH
+        handleRefreshAllConversations();
+      });
+    }
+    if (elements.searchInput) {
+      // חלק חיפוש רשת (chat-ui.js) – מד טעינה מיידי + debounce רק לשאילתת הריליי | HYPER CORE TECH
+      const debouncedNetworkSearch = debounce((value) => {
+        runNetworkContactSearch(value);
+      }, 350);
+      elements.searchInput.addEventListener('input', (event) => {
+        const value = event.target?.value || '';
+        const trimmed = value.trim();
+        state.filterText = value;
+        if (trimmed.length >= 2) {
+          state.networkSearchPending = true;
+          const prevQ = String(state.networkSearchQuery || '').toLowerCase();
+          const nextQ = trimmed.toLowerCase();
+          if (prevQ && prevQ !== nextQ && !nextQ.startsWith(prevQ) && !prevQ.startsWith(nextQ)) {
+            state.networkSearchResults = [];
+          }
+          state.networkSearchQuery = trimmed;
+        } else {
+          state.networkSearchPending = false;
+          state.networkSearchResults = [];
+          state.networkSearchQuery = '';
+        }
+        updateSearchLoadingUI();
+        renderContacts(true);
+        debouncedNetworkSearch(value);
+      });
+    }
+    if (elements.composer) {
+      elements.composer.addEventListener('submit', handleSendMessage);
+    }
+    if (elements.messagesContainer) {
+      elements.messagesContainer.addEventListener('click', handleMessageActions);
+    }
+    if (elements.backButton) {
+      elements.backButton.addEventListener('click', () => {
+        resetConversationView();
+      });
+    }
+    const headerBackButton = doc.getElementById('chatConversationActionsBack');
+    if (headerBackButton) {
+      headerBackButton.addEventListener('click', () => {
+        resetConversationView();
+      });
+    }
+    // תפריט ⋮ בכותרת שיחה (במקום חזרה בשמאל) | HYPER CORE TECH
+    const headerMenuBtn = doc.getElementById('chatConversationMenuBtn');
+    const headerMenu = doc.getElementById('chatConversationMenu');
+    const closeHeaderMenu = () => {
+      if (!headerMenu || headerMenu.hidden) return;
+      headerMenu.hidden = true;
+      if (headerMenuBtn) headerMenuBtn.setAttribute('aria-expanded', 'false');
+      headerMenu.style.removeProperty('position');
+      headerMenu.style.removeProperty('top');
+      headerMenu.style.removeProperty('left');
+      headerMenu.style.removeProperty('right');
+      headerMenu.style.removeProperty('transform');
+      headerMenu.style.removeProperty('inset-inline-start');
+      headerMenu.style.removeProperty('inset-inline-end');
+      // מחזירים לתפריט העטיפה אחרי פורטל ל-body במובייל | HYPER CORE TECH
+      const wrap = headerMenuBtn?.closest?.('.chat-conversation__menu-wrap');
+      if (wrap && headerMenu.parentElement !== wrap) {
+        wrap.appendChild(headerMenu);
+      }
+    };
+    if (headerMenuBtn && headerMenu) {
+      const positionHeaderMenu = () => {
+        if (!headerMenu || headerMenu.hidden) return;
+        const pad = 8;
+        const isMobile = window.matchMedia('(max-width: 768px)').matches;
+        const btnRect = headerMenuBtn.getBoundingClientRect();
+
+        if (isMobile) {
+          // פורטל ל-body – בורח מ-overflow/backdrop-filter של .chat-panel | HYPER CORE TECH
+          if (headerMenu.parentElement !== doc.body) {
+            doc.body.appendChild(headerMenu);
+          }
+          headerMenu.style.setProperty('position', 'fixed', 'important');
+          headerMenu.style.setProperty('top', `${Math.round(btnRect.bottom + 8)}px`, 'important');
+          headerMenu.style.setProperty('right', 'auto', 'important');
+          headerMenu.style.setProperty('transform', 'none', 'important');
+          headerMenu.style.setProperty('inset-inline-start', 'auto', 'important');
+          headerMenu.style.setProperty('inset-inline-end', 'auto', 'important');
+          // קודם מיישרים לשמאל הכפתור (נפתח ימינה), ואז מתקנים חריגה | HYPER CORE TECH
+          headerMenu.style.setProperty('left', `${Math.round(btnRect.left)}px`, 'important');
+          const rect = headerMenu.getBoundingClientRect();
+          let left = btnRect.left;
+          if (btnRect.left + rect.width <= window.innerWidth - pad) {
+            left = btnRect.left;
+          } else {
+            left = Math.max(pad, window.innerWidth - pad - rect.width);
+          }
+          if (left < pad) left = pad;
+          headerMenu.style.setProperty('left', `${Math.round(left)}px`, 'important');
+          return;
+        }
+
+        const wrap = headerMenuBtn?.closest?.('.chat-conversation__menu-wrap');
+        if (wrap && headerMenu.parentElement !== wrap) {
+          wrap.appendChild(headerMenu);
+        }
+        headerMenu.style.removeProperty('position');
+        headerMenu.style.removeProperty('top');
+        headerMenu.style.setProperty('left', '0px');
+        headerMenu.style.setProperty('right', 'auto');
+        headerMenu.style.setProperty('transform', 'none');
+        const rect = headerMenu.getBoundingClientRect();
+        if (rect.left < pad) {
+          headerMenu.style.transform = `translateX(${Math.ceil(pad - rect.left)}px)`;
+        } else if (rect.right > window.innerWidth - pad) {
+          headerMenu.style.transform = `translateX(${Math.floor((window.innerWidth - pad) - rect.right)}px)`;
+        }
+      };
+      headerMenuBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!headerMenu.hidden) {
+          closeHeaderMenu();
+          return;
+        }
+        syncConversationArchiveMenuItems();
+        headerMenu.hidden = false;
+        headerMenuBtn.setAttribute('aria-expanded', 'true');
+        requestAnimationFrame(positionHeaderMenu);
+      });
+      headerMenu.addEventListener('click', (e) => {
+        const item = e.target.closest('[data-action]');
+        if (!item) return;
+        e.preventDefault();
+        closeHeaderMenu();
+        const action = item.getAttribute('data-action');
+        if (action === 'auto-clean') {
+          // תאימות – כמו clear-chat | HYPER CORE TECH
+          showClearChatConfirmDialog(state.activeContact);
+        } else if (action === 'clear-chat') {
+          // אישור מחיקת הודעות ישירות | HYPER CORE TECH
+          showClearChatConfirmDialog(state.activeContact);
+        } else if (action === 'delete-chat') {
+          // מחיקת שיחה + הסרה מהרשימה | HYPER CORE TECH
+          showDeleteChatConfirmDialog(state.activeContact);
+        } else if (action === 'archive-chat') {
+          archiveActiveConversation();
+        } else if (action === 'unarchive-chat') {
+          unarchiveActiveConversation();
+        } else if (action === 'schedule-timer') {
+          // טיימר ניקוי אוטומטי (דסקטופ + מובייל) | HYPER CORE TECH
+          openDesktopDisappearingTimerDialog(state.activeContact);
+        }
+      });
+      doc.addEventListener('click', (e) => {
+        if (!headerMenu.hidden && !headerMenu.contains(e.target) && e.target !== headerMenuBtn && !headerMenuBtn.contains(e.target)) {
+          closeHeaderMenu();
+        }
+      });
+      window.addEventListener('resize', () => {
+        if (!headerMenu.hidden) positionHeaderMenu();
+      }, { passive: true });
+    }
+    if (elements.notificationsMarkRead) {
+      elements.notificationsMarkRead.addEventListener('click', () => {
+        if (typeof App.markAllNotificationsRead === 'function') {
+          App.markAllNotificationsRead(true);
+        }
+      });
+    }
+    if (elements.footerItems?.length) {
+      elements.footerItems.forEach((item) => {
+        item.addEventListener('click', () => handleFooterNav(item));
+      });
+    }
+    
+    // האזנה לכפתורי סרגל הצד החדש | HYPER CORE TECH
+    if (elements.navSidebarItems?.length) {
+      elements.navSidebarItems.forEach((item) => {
+        item.addEventListener('click', () => handleFooterNav(item));
+      });
+    }
+    
+    // עדכון תמונת פרופיל בסרגל הצד אם זמינה
+    if (elements.navProfileImg && (App.userPicture || App.userAvatar)) {
+      elements.navProfileImg.src = App.userPicture || App.userAvatar;
+    }
+    
+    // חלק אטב אחיד (chat-ui.js) – כפתור טורנט נפרד הוסר — הכל עובר דרך כפתור אטב | HYPER CORE TECH
+    if (elements.torrentSendButton) {
+      elements.torrentSendButton.style.display = 'none';
+    }
+  }
+
+  function initSubscriptions() {
+    App.subscribeChat?.('contacts', () => {
+      renderContacts();
+      // כשתמונת פרופיל מגיעה אחרי פתיחת השיחה – מרעננים את ההדר | HYPER CORE TECH
+      if (state.activeContact) updateActiveConversationHeader(state.activeContact);
+    });
+    // אחרי שחזור קאש – מרעננים שיחה שכבר נפתחה מהתרעה | HYPER CORE TECH
+    App.subscribeChat?.('restored', () => {
+      if (!state.activeContact) return;
+      updateActiveConversationHeader(state.activeContact);
+      renderMessages(state.activeContact, { force: true, resetLimit: true });
+    });
+    App.subscribeChat?.('message', (payload = {}) => {
+      const { peer, message, statusUpdate, replacedTempId, removedMessageId } = payload;
+      if (!peer) return;
+      const normalizedPeer = peer.toLowerCase();
+      if (payload.disappearingTimerUpdated || payload.disappearingPruned || payload.disappearingSystemNotice) {
+        if (normalizedPeer === (state.activeContact || '').toLowerCase()) {
+          if (payload.disappearingSystemNotice && message && !payload.disappearingPruned) {
+            appendSingleMessage(message);
+          } else {
+            renderMessages(state.activeContact, { force: true });
+          }
+        }
+        renderContacts(true);
+        if (!removedMessageId && !statusUpdate && !replacedTempId) {
+          if (payload.disappearingSystemNotice || payload.disappearingTimerUpdated || payload.disappearingPruned) return;
+        }
+      }
+      const isIncoming = message?.direction === 'incoming'
+        || (message?.from && typeof App.publicKey === 'string' && message.from.toLowerCase() !== App.publicKey.toLowerCase());
+      const isActivePeer = normalizedPeer === (state.activeContact || '').toLowerCase();
+      const isActivelyViewing = isConversationActivelyViewed(normalizedPeer);
+      const messageId = message?.id || null;
+
+      // חלק מניעת כפילות (chat-ui.js) – עדכון/החלפת temp בלי append נוסף | HYPER CORE TECH
+      if (removedMessageId && elements.messagesContainer) {
+        const removedIds = Array.isArray(payload.removedMessageIds)
+          ? payload.removedMessageIds.filter(Boolean)
+          : [removedMessageId];
+        if (!removedIds.includes(removedMessageId)) removedIds.push(removedMessageId);
+        removedIds.forEach((id) => {
+          elements.messagesContainer.querySelector(`[data-message-id="${id}"]`)?.remove();
+        });
+        const removedFileId = payload.removedFileId
+          || (typeof removedMessageId === 'string' && removedMessageId.startsWith('p2p-send-')
+            ? removedMessageId.slice('p2p-send-'.length)
+            : '')
+          || (typeof removedMessageId === 'string' && removedMessageId.startsWith('p2p-recv-')
+            ? removedMessageId.slice('p2p-recv-'.length)
+            : '');
+        if (removedFileId) {
+          elements.messagesContainer.querySelector(`[data-p2p-file-id="${removedFileId}"]`)?.remove();
+          elements.messagesContainer.querySelector(`[data-transfer-id="${removedFileId}"]`)?.remove();
+        }
+      }
+      if (replacedTempId && message?.id) {
+        const realEl = elements.messagesContainer?.querySelector(`[data-message-id="${message.id}"]`);
+        const tempEl = elements.messagesContainer?.querySelector(`[data-message-id="${replacedTempId}"]`);
+        if (realEl && tempEl && realEl !== tempEl) {
+          tempEl.remove();
+          updateMessageStatus(message.id, message.status || 'sent');
+        } else if (tempEl) {
+          updateMessageStatus(replacedTempId, message.status || 'sent', message.id);
+        } else if (!realEl) {
+          appendSingleMessage(message);
+        } else {
+          updateMessageStatus(message.id, message.status || 'sent');
+        }
+        if (isActivelyViewing) App.markChatConversationRead(peer);
+        return;
+      }
+      if (statusUpdate && message?.id) {
+        updateMessageStatus(message.id, message.status || 'sent');
+        if (isActivelyViewing) App.markChatConversationRead(peer);
+        return;
+      }
+
+      // התרעה אם לא צופים בשיחה בחזית (P2P ברקע ממשיך; רק התראה/נצפה משתנים) | HYPER CORE TECH
+      const messageCreatedAt = Number(message?.createdAt || message?.created_at || 0) || 0;
+      // בלי timestamp (נפוץ ב-P2P) – מתייחסים כהודעה חדשה | HYPER CORE TECH
+      const messageAgeSec = messageCreatedAt > 0
+        ? Math.floor(Date.now() / 1000) - messageCreatedAt
+        : 0;
+      const isRecentMessage = messageAgeSec >= 0 && messageAgeSec < 120;
+      
+      if (isIncoming && !wasMessageNotified(messageId) && isRecentMessage) {
+        if (!isActivelyViewing) {
+          playChatMessageSound();
+          const snippetSource = (message?.content && message.content.trim()) ||
+            (message?.attachment?.name ? `📎 ${message.attachment.name}` :
+              (message?.attachment
+                ? (String(message.attachment.type || '').toLowerCase().startsWith('audio/') ? 'הודעת קול' : 'קובץ מצורף')
+                : 'הודעה חדשה'));
+          const notifyId = messageId || `local-${normalizedPeer}-${Date.now()}`;
+          showIncomingChatNotification(normalizedPeer, snippetSource, notifyId);
+        }
+      }
+
+      if (isActivePeer) {
+        // מדיה יוצאת אחרי P2P — ממירים את בועת ההעלאה במקום בלי רינדור מלא/קפיצה | HYPER CORE TECH
+        if (message && settleOutgoingMediaTransfer(message)) {
+          ensureUnifiedFileCardsVisible(peer);
+          setTimeout(() => ensureUnifiedFileCardsVisible(peer), 80);
+          if (isActivelyViewing) App.markChatConversationRead(peer);
+          return;
+        }
+        // תמונה/וידאו — append בלבד, בלי renderMessages שמוחק כרטיסי מסמכים | HYPER CORE TECH
+        if (message && isVisualMediaChatMessage(message)) {
+          appendVisualMediaMessageWithoutWipe(message);
+          ensureUnifiedFileCardsVisible(peer);
+          setTimeout(() => ensureUnifiedFileCardsVisible(peer), 80);
+          setTimeout(() => ensureUnifiedFileCardsVisible(peer), 300);
+          if (isActivelyViewing) App.markChatConversationRead(peer);
+          return;
+        }
+        // הודעה קולית — נגן מלא מיד (לא טקסט "🎤 הודעה קולית") | HYPER CORE TECH
+        if (message && isVoiceOrAudioChatMessage(message)) {
+          if (!appendOrUpgradeVoiceMessage(message)) {
+            renderMessages(peer, { force: true });
+          }
+          ensureUnifiedFileCardsVisible(peer);
+          if (isActivelyViewing) App.markChatConversationRead(peer);
+          return;
+        }
+        // ZIP/קובץ (שולח+מקבל) — ממירים את בועת ההעברה במקום בלי כרטיס שני | HYPER CORE TECH
+        if (message && settleOutgoingFileTransfer(message)) {
+          ensureUnifiedFileCardsVisible(peer);
+          if (isActivelyViewing) App.markChatConversationRead(peer);
+          return;
+        }
+        // כל מצורף אחר — לא wipe מלא (מונע העלמת כרטיסי מסמך בתמונות) | HYPER CORE TECH
+        if (message?.attachment) {
+          if (messageUsesUnifiedFileCard(message)) {
+            if (!fileCardDomExists(message)) {
+              const item = doc.createElement('div');
+              settleFileCardBubble(item, message);
+              if (!item.isConnected) elements.messagesContainer.appendChild(item);
+            }
+          } else if (!elements.messagesContainer.querySelector(`[data-message-id="${message.id}"]`) ||
+            isVoiceOrAudioChatMessage(message)) {
+            // אודיו — נגן מלא; אחרת מדיה ויזואלית / append רגיל | HYPER CORE TECH
+            if (isVoiceOrAudioChatMessage(message)) {
+              if (!appendOrUpgradeVoiceMessage(message)) appendSingleMessage(message);
+            } else if (!appendVisualMediaMessageWithoutWipe(message)) {
+              appendSingleMessage(message);
+            }
+          }
+          ensureUnifiedFileCardsVisible(peer);
+          setTimeout(() => ensureUnifiedFileCardsVisible(peer), 100);
+          if (isActivelyViewing) App.markChatConversationRead(peer);
+          return;
+        }
+        // הודעות טקסט פשוטות – append בלי רינדור מלא של ההיסטוריה | HYPER CORE TECH
+        if (message && isSimpleChatMessage(message)) {
+          appendSingleMessage(message);
+        } else if (message) {
+          renderMessages(peer, { force: true });
+        }
+        if (isActivelyViewing) App.markChatConversationRead(peer);
+      } else {
+        renderContacts();
+      }
+      
+      // חלק סטטוס הודעות (chat-ui.js) – עדכון DOM ישיר כשמשתנה סטטוס הודעה | HYPER CORE TECH
+      // מונע רינדור מלא רק לעדכון סטטוס
+    });
+    App.subscribeChat?.('unread', (total) => {
+      renderChatBadge(total);
+    });
+    ensureNotificationSubscription();
+  }
+
+  function initializeUI() {
+    renderContacts(true); // force render בטעינה ראשונה
+    renderChatBadge(App.chatState?.unreadTotal || 0);
+    elements.messagesContainer?.setAttribute('hidden', '');
+    elements.notificationsSection?.setAttribute('hidden', '');
+    subscribeToEvents();
+    initSubscriptions();
+    ensureNotificationSubscription();
+    if (typeof App.initializeChatFileTransferUI === 'function') {
+      App.initializeChatFileTransferUI({
+        fileButton: doc.getElementById('chatComposerFileButton'),
+        fileInput: doc.getElementById('chatComposerFileInput'),
+        filePreview: doc.getElementById('chatComposerFilePreview'),
+        fileNameLabel: doc.getElementById('chatComposerFileName'),
+        fileRemove: doc.getElementById('chatComposerFileRemove'),
+        getActivePeer: () => state.activeContact,
+        getMessageDraft: () => elements.messageInput?.value || '',
+      });
+    }
+    // אתחול UI להודעות קוליות – מוסיף כפתור מיקרופון, הקלטה והצמדה כשמצרפים קול
+    if (typeof App.initializeChatVoiceUI === 'function') {
+      App.initializeChatVoiceUI({
+        getActivePeer: () => state.activeContact,
+        getMessageDraft: () => elements.messageInput?.value || '',
+        composerElement: elements.composer,
+      });
+    }
+    // מנוי פרוגרס להעברות P2P כדי לרנדר בועות התקדמות בתוך השיחה | HYPER CORE TECH
+    subscribeTransferProgress();
+    ensureChatStickScrollWiring();
+    ensureContactsP2PStatusWiring();
+    try {
+      if (typeof App.subscribeChatPresence === 'function') {
+        App.subscribeChatPresence((snap) => {
+          if (!snap || !snap.peer) return;
+          if (state.activeContact && String(state.activeContact).toLowerCase() === String(snap.peer).toLowerCase()) {
+            updateConversationPresence(snap.peer);
+          }
+        });
+      }
+      window.addEventListener('sos-chat-presence', (ev) => {
+        const peer = ev && ev.detail && ev.detail.peer;
+        if (peer && state.activeContact && String(state.activeContact).toLowerCase() === String(peer).toLowerCase()) {
+          updateConversationPresence(peer);
+        }
+      });
+    } catch (_) {}
+    // רישום SW והאזנה להודעות ממנו (בקשת הרשאות רק בלחיצה על פאנל הצ'אט)
+    registerChatServiceWorkerIfSupported();
+    initChatServiceWorkerMessageHandling();
+    updatePanelMode(PANEL_MODES.LIST);
+  }
+
+  // חלק צ'אט (chat-ui.js) – מאפשר למודולים חיצוניים (למשל התרעות) לסגור את חלון הצ'אט במעבר בין פאנלים
+  App.closeChatPanel = function closeChatPanel() {
+    togglePanel(false);
+  };
+
+  App.toggleChatPanel = togglePanel;
+  App.openChatList = function openChatList() {
+    // תמיד רשימת שיחות — מונע הבזק של טאב התראות (לייקים/תגובות) | HYPER CORE TECH
+    state.activeContact = null;
+    setFooterMode('contacts');
+    elements.notificationsSection?.setAttribute('hidden', '');
+    elements.conversationHeader?.setAttribute('hidden', '');
+    elements.composer?.setAttribute('hidden', '');
+    if (elements.messagesContainer) {
+      elements.messagesContainer.innerHTML = '';
+      elements.messagesContainer.setAttribute('hidden', '');
+    }
+    if (elements.emptyState) {
+      elements.emptyState.removeAttribute('hidden');
+    }
+    updatePanelMode(PANEL_MODES.LIST);
+    if (!state.isOpen) {
+      togglePanel(true);
+    } else {
+      renderContacts(true);
+    }
+    setFooterMode('contacts');
+    elements.notificationsSection?.setAttribute('hidden', '');
+    updatePanelMode(PANEL_MODES.LIST);
+  };
+  App.resetChatConversationView = resetConversationView;
+
+  // חלק התראות (chat-ui.js) – חשיפת פונקציות שליטה בפאנל ההתראות | HYPER CORE TECH
+  App.openNotificationsPanel = function openNotificationsPanel() {
+    // וידוא שהפאנל פתוח
+    if (!state.isOpen) {
+      togglePanel(true);
+    }
+    // מעבר למצב התראות
+    setFooterMode('notifications');
+    // הצגת התצוגה
+    showNotificationsView();
+    // עדכון כפתור הניווט הראשי
+    if (elements.notificationsToggle) {
+      elements.notificationsToggle.setAttribute('aria-pressed', 'true');
+      elements.notificationsToggle.classList.add('is-active');
+    }
+  };
+
+  App.closeNotificationsPanel = function closeNotificationsPanel() {
+    if (elements.notificationsToggle) {
+      elements.notificationsToggle.setAttribute('aria-pressed', 'false');
+      elements.notificationsToggle.classList.remove('is-active');
+    }
+    // אם אנחנו במצב התראות, סגור את הפאנל
+    if (state.isOpen && state.footerMode === 'notifications') {
+      togglePanel(false);
+    }
+  };
+
+  // חלק צ'אט (chat-ui.js) – חשיפת פונקציה לקבלת המשתמש הפעיל בשיחה
+  App.getActiveChatContact = function getActiveChatContact() {
+    return state.activeContact;
+  };
+  // חלק P2P DataChannel (chat-ui.js) – alias עבור מודול DataChannel reconnect | HYPER CORE TECH
+  App.getActiveChatPeer = App.getActiveChatContact;
+  // חלק גלילה (chat-ui.js) – חשיפה לחשיפת מדיה בלי לשנות את תהליך הטעינה | HYPER CORE TECH
+  App.stickChatToBottomIfPinned = stickChatToBottomIfPinned;
+  App.setChatStickToBottom = setChatStickToBottom;
+
+  // חלק צ'אט (chat-ui.js) – חשיפת פונקציה לפתיחת שיחה ספציפית (התרעות / deep link / סיום שיחה) | HYPER CORE TECH
+  App.showChatConversation = function showChatConversationExternal(peerPubkey) {
+    if (!peerPubkey) return;
+    const normalized = String(peerPubkey).toLowerCase();
+    const openNow = () => {
+      try {
+        if (typeof App.ensureChatContact === 'function') {
+          App.ensureChatContact(normalized);
+        }
+      } catch (_) {}
+      const contact = App.chatState?.contacts?.get(normalized);
+      togglePanel(true);
+      showConversation(normalized, contact);
+    };
+    // מחכים לשחזור IndexedDB – אחרת נפתח בלי היסטוריה/שם | HYPER CORE TECH
+    const ready = App.chatStateReady;
+    if (ready && typeof ready.then === 'function') {
+      Promise.resolve(ready).then(openNow).catch(openNow);
+    } else {
+      openNow();
+    }
+  };
+
+  // חלק העתקה ללוח (chat-ui.js) – העתקת טקסט הודעה ללוח בלחיצה | HYPER CORE TECH
+  App.copyMessageToClipboard = function copyMessageToClipboard(element) {
+    if (!element) return;
+    const fullText = element.getAttribute('data-full-text');
+    const textToCopy = fullText 
+      ? fullText.replace(/\\n/g, '\n').replace(/\\'/g, "'")
+      : element.innerText.replace('להמשך קריאה...', '').trim();
+    
+    if (!textToCopy) return;
+    
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      // הצגת הודעה למשתמש
+      const toast = doc.createElement('div');
+      toast.className = 'chat-toast';
+      toast.textContent = 'הועתק ללוח!';
+      toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:8px 16px;border-radius:20px;font-size:14px;z-index:10000;animation:fadeInOut 2s forwards;';
+      doc.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2000);
+    }).catch(() => {});
+  };
+
+  // חלק העתקת לינק (chat-ui.js) – העתקת URL מכרטיס לינק/YouTube בלי לפתוח דפדפן | HYPER CORE TECH
+  App.copyChatLinkToClipboard = function copyChatLinkToClipboard(url) {
+    const href = String(url || '').trim();
+    if (!href) return;
+    const showToast = () => {
+      const toast = doc.createElement('div');
+      toast.className = 'chat-toast';
+      toast.textContent = 'הקישור הועתק!';
+      toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:8px 16px;border-radius:20px;font-size:14px;z-index:10000;animation:fadeInOut 2s forwards;';
+      doc.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2000);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(href).then(showToast).catch(() => {});
+      return;
+    }
+    try {
+      const ta = doc.createElement('textarea');
+      ta.value = href;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+      doc.body.appendChild(ta);
+      ta.select();
+      doc.execCommand('copy');
+      ta.remove();
+      showToast();
+    } catch (_) {}
+  };
+
+  // חלק הרחבת טקסט (chat-ui.js) – הרחבת הודעה ארוכה שנחתכה | HYPER CORE TECH
+  App.expandMessageText = function expandMessageText(element) {
+    if (!element) return;
+    const fullText = element.getAttribute('data-full-text');
+    if (!fullText) return;
+    
+    const expandedText = fullText.replace(/\\n/g, '<br>').replace(/\\'/g, "'");
+    element.innerHTML = expandedText;
+    element.classList.remove('chat-message__text--truncated');
+    element.onclick = function() { App.copyMessageToClipboard(this); };
+  };
+
+  // חלק אינדיקטור שליחה (chat-ui.js) – הצגת סימן טעינה בזמן שליחת הודעה קולית | HYPER CORE TECH
+  const voiceSendingIndicators = new Map();
+  
+  App.showVoiceSendingIndicator = function showVoiceSendingIndicator(peer, loadingId) {
+    if (!elements.messagesContainer || !peer) return;
+    
+    const indicator = doc.createElement('div');
+    indicator.className = 'chat-message chat-message--outgoing chat-message--sending';
+    indicator.id = loadingId;
+    indicator.innerHTML = `
+      <div class="chat-message__content">
+        <div class="chat-message__sending-indicator">
+          <i class="fa-solid fa-spinner fa-spin"></i>
+          <span>שולח הודעה קולית...</span>
+        </div>
+        <div class="chat-message__meta-row">
+          <span class="chat-message__meta">
+            <i class="fa-solid fa-clock"></i>
+          </span>
+        </div>
+      </div>
+    `;
+    elements.messagesContainer.appendChild(indicator);
+    stickChatToBottomIfPinned({ force: true });
+    voiceSendingIndicators.set(loadingId, indicator);
+  };
+  
+  App.hideVoiceSendingIndicator = function hideVoiceSendingIndicator(loadingId) {
+    const indicator = voiceSendingIndicators.get(loadingId);
+    if (indicator && indicator.parentElement) {
+      indicator.remove();
+    }
+    voiceSendingIndicators.delete(loadingId);
+  };
+
+  // חלק אטב אחיד (chat-ui.js) – openTorrentSendDialog הוסר — הכל עובר דרך כפתור אטב אחיד | HYPER CORE TECH
+  App.openTorrentSendDialog = function openTorrentSendDialog() {
+    console.log('[CHAT] openTorrentSendDialog הוסר — השתמש בכפתור אטב');
+  };
+
+  // חלק WebTorrent (chat-ui.js) – זיהוי הודעות WebTorrent נכנסות | HYPER CORE TECH
+  App.handleIncomingChatMessage = function handleIncomingChatMessage(fromPeer, content) {
+    // בדיקה אם זו הודעת בקשת העברה
+    if (typeof App.torrentTransfer?.parseTransferMessage === 'function') {
+      const handled = App.torrentTransfer.parseTransferMessage(content, fromPeer);
+      if (handled) return true; // ההודעה טופלה כבקשת העברה
+    }
+    return false;
+  };
+
+  // חשיפת מצב הפאנל ל-feed.js עבור לוגיקת התראות | HYPER CORE TECH
+  Object.defineProperty(App.chatState, 'isOpen', {
+    get: () => state.isOpen,
+    enumerable: true
+  });
+  Object.defineProperty(App.chatState, 'footerMode', {
+    get: () => state.footerMode,
+    enumerable: true
+  });
+
+  initializeUI();
+  togglePanel(false);
+  ensureChatEnabled();
+})(window);

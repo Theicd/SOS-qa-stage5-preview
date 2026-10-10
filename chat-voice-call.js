@@ -1,0 +1,1848 @@
+// חלק שיחות קול (chat-voice-call.js) – מודול WebRTC לשיחות קוליות בזמן אמת דרך Nostr
+// מבוסס על nrtc אבל משולב עם התשתית הקיימת של SOS2
+(function initChatVoiceCall(window) {
+  const App = window.NostrApp || (window.NostrApp = {});
+
+  // חלק שיחות קול (chat-voice-call.js) – הגדרות WebRTC עם STUN server של Google
+  const RTC_CONFIG = {
+    iceServers:
+      (Array.isArray(App.RTC_ICE_SERVERS) && App.RTC_ICE_SERVERS.length > 0
+        ? App.RTC_ICE_SERVERS
+        : (Array.isArray(window.NostrRTC_ICE) && window.NostrRTC_ICE.length > 0
+            ? window.NostrRTC_ICE
+            : [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+              ]))
+  };
+  const ICE_DISCONNECT_GRACE_MS = 4000;
+  // CALL_METRIC_KIND 25060 RETIRED — NEW per-call Relay metrics are ZERO (privacy phase 1)
+  const MAX_SIGNAL_SDP_CHARS = 64 * 1024;
+  const MAX_SIGNAL_CANDIDATES = 256;
+  const MAX_CANDIDATE_FIELD_CHARS = 4096;
+
+  /** SDP מהסיגנלינג / JSON — תמיד מחזיר {type,sdp} או null */
+  function normalizeSessionDescription(raw) {
+    if (!raw) return null;
+    let o = raw;
+    if (typeof o === 'string') {
+      try { o = JSON.parse(o); } catch (_err) { return null; }
+    }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    if (o.offer && typeof o.offer === 'object' && !o.type && !o.sdp) o = o.offer;
+    if (o.answer && typeof o.answer === 'object' && !o.type && !o.sdp) o = o.answer;
+    const type = o.type;
+    const sdp = typeof o.sdp === 'string' ? o.sdp : '';
+    if (typeof type !== 'string' || !type || !sdp) return null;
+    if (sdp.length > MAX_SIGNAL_SDP_CHARS) return null;
+    return { type, sdp };
+  }
+
+  function isValidIncomingCandidateList(raw) {
+    const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+    if (list.length > MAX_SIGNAL_CANDIDATES) return false;
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i];
+      if (c == null) continue;
+      if (typeof c === 'string') {
+        if (c.length > MAX_CANDIDATE_FIELD_CHARS) return false;
+        continue;
+      }
+      if (typeof c !== 'object') return false;
+      const cand = c.candidate;
+      if (typeof cand === 'string' && cand.length > MAX_CANDIDATE_FIELD_CHARS) return false;
+    }
+    return true;
+  }
+  let state = {
+    currentPeer: null,
+    peerConnection: null,
+    currentPeer: null,
+    isCallActive: false,
+    isIncoming: false,
+    isMuted: false,
+    callStartTime: null,
+    candidateQueue: [],
+    candidateTimer: null,
+    // חלק שיחות קול (chat-voice-call.js) – באפר ל-ICE candidates נכנסים לפני PC / setRemoteDescription | HYPER CORE TECH
+    pendingRemoteCandidates: Object.create(null),
+    callAnswered: false,
+    iceDisconnectTimer: null,
+    lastEndedAt: Object.create(null),
+    lastOfferFrom: {},
+    waitingOffer: null,
+    lastSignalReceivedAt: 0,
+    signalLastResubscribeAt: 0,
+    signalKeepaliveTimer: null,
+    ending: false,
+    callStartTimestamp: null,
+    callSessionId: null,
+    // חלק שיחות קול (chat-voice-call.js) – שמירת audioSession.type כדי להחזיר אותו בסיום השיחה (מובייל) | HYPER CORE TECH
+    previousAudioSessionType: null,
+    // חלק שיחות קול (chat-voice-call.js) – דגל: האם שינינו AudioSession עבור שיחה (כדי לא לשנות כשדוחים לפני קבלה) | HYPER CORE TECH
+    audioSessionTypeApplied: false,
+  };
+
+  // Session-scoped terminal guards — survive UI resets / deeplink / decline retries.
+  const terminalBySession = new Map(); // sessionId -> { ended, disconnectSent, missedSent, declined, answeredLocally, at }
+
+  function getTerminal(sessionId) {
+    const sid = String(sessionId || '').trim();
+    if (!sid || sid.length < 16) return null;
+    let t = terminalBySession.get(sid);
+    if (!t) {
+      t = {
+        ended: false,
+        disconnectSent: false,
+        missedSent: false,
+        declined: false,
+        answeredLocally: false,
+        at: Date.now(),
+      };
+      terminalBySession.set(sid, t);
+      if (terminalBySession.size > 40) {
+        const first = terminalBySession.keys().next().value;
+        terminalBySession.delete(first);
+      }
+    }
+    return t;
+  }
+
+  function markJsSessionTerminal(sessionId, reason) {
+    const sid = String(sessionId || '').trim();
+    if (!sid) return;
+    const term = getTerminal(sid);
+    if (term) term.ended = true;
+    try {
+      if (typeof App.markCallSessionTerminal === 'function') {
+        App.markCallSessionTerminal(sid, reason || 'ended');
+      } else if (App.CallSignalE2ee && typeof App.CallSignalE2ee.markCallSessionTerminal === 'function') {
+        App.CallSignalE2ee.markCallSessionTerminal(sid, reason || 'ended');
+      }
+    } catch (_e) {}
+    markNativeSessionTerminal(sid, 'ENDED');
+  }
+
+  function isOfferApplyBlocked(sessionId, peerPubkey) {
+    const sid = String(sessionId || state.callSessionId || '').trim();
+    if (!sid) {
+      try { console.log('CALL_STALE_OFFER_APPLY_BLOCK reason=no-active-incoming'); } catch (_e) {}
+      return true;
+    }
+    const term = getTerminal(sid);
+    if (term && term.ended) {
+      try { console.log('CALL_STALE_OFFER_APPLY_BLOCK reason=terminal'); } catch (_e) {}
+      return true;
+    }
+    try {
+      if (typeof App.isCallSessionTerminal === 'function' && App.isCallSessionTerminal(sid)) {
+        try { console.log('CALL_STALE_OFFER_APPLY_BLOCK reason=tombstoned'); } catch (_e) {}
+        return true;
+      }
+      if (App.CallSignalE2ee && typeof App.CallSignalE2ee.isCallSessionTerminal === 'function'
+        && App.CallSignalE2ee.isCallSessionTerminal(sid)) {
+        try { console.log('CALL_STALE_OFFER_APPLY_BLOCK reason=tombstoned'); } catch (_e) {}
+        return true;
+      }
+    } catch (_e) {}
+    if (state.ending) {
+      try { console.log('CALL_STALE_OFFER_APPLY_BLOCK reason=terminal'); } catch (_e) {}
+      return true;
+    }
+    return false;
+  }
+
+  function markNativeSessionTerminal(sessionId, stateName) {
+    try {
+      const bridge = window.SosNativeShell;
+      if (bridge && typeof bridge.markSecureCallSessionTerminal === 'function') {
+        bridge.markSecureCallSessionTerminal(sessionId, stateName);
+      }
+    } catch (_e) {}
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – סגירה בטוחה של subscription (מוגדר מוקדם כדי להיות זמין לכל הפונקציות) | HYPER CORE TECH
+  function closeSubscriptionSafely(sub) {
+    if (!sub) return;
+    try { if (typeof sub.close === 'function') { sub.close(); return; } } catch {}
+    try { if (typeof sub.unsub === 'function') { sub.unsub(); return; } } catch {}
+    try { if (typeof sub.unsubscribe === 'function') { sub.unsubscribe(); } } catch {}
+  }
+
+  // NEW 25060 WRITE COUNT = ZERO — historical Relay copies may remain; do not publish.
+  async function publishCallMetric() {
+    return;
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – בדיקת תמיכה בדפדפן
+  function isWebRTCSupported() {
+    return !!(
+      navigator.mediaDevices &&
+      navigator.mediaDevices.getUserMedia &&
+      window.RTCPeerConnection
+    );
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – AudioSession (play-and-record) לשיפור ניתוב אודיו במכשירים תומכים | HYPER CORE TECH
+  function isAudioSessionTypeSupported() {
+    try {
+      const session = navigator && navigator.audioSession ? navigator.audioSession : null;
+      return !!(session && ('type' in session));
+    } catch {
+      return false;
+    }
+  }
+
+  function getAudioSessionTypeSafely() {
+    try {
+      if (!isAudioSessionTypeSupported()) return null;
+      return navigator.audioSession.type || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setAudioSessionTypeSafely(type) {
+    try {
+      if (!isAudioSessionTypeSupported()) return;
+      navigator.audioSession.type = type;
+    } catch {}
+  }
+
+  function setCallAudioSessionType() {
+    if (!isAudioSessionTypeSupported()) return;
+    if (state.audioSessionTypeApplied) return;
+
+    state.audioSessionTypeApplied = true;
+    state.previousAudioSessionType = getAudioSessionTypeSafely();
+    setAudioSessionTypeSafely('play-and-record');
+  }
+
+  function restoreAudioSessionType() {
+    if (!isAudioSessionTypeSupported()) return;
+    if (!state.audioSessionTypeApplied) return;
+
+    state.audioSessionTypeApplied = false;
+    const prev = state.previousAudioSessionType;
+    state.previousAudioSessionType = null;
+
+    if (typeof prev === 'string' && prev) {
+      setAudioSessionTypeSafely(prev);
+    } else {
+      setAudioSessionTypeSafely('auto');
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – קבלת הרשאות מיקרופון
+  async function getLocalStream() {
+    if (state.localStream) {
+      return state.localStream;
+    }
+
+    try {
+      const gumT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const gumMs = () => Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - gumT0);
+      try { console.log('CALL_ACCEPT_GUM_START'); } catch (_) {}
+      if (typeof App.ensureNativeMediaPermissions === 'function') {
+        try { console.log('CALL_ACCEPT_GUM_PERM_START'); } catch (_) {}
+        const ok = await App.ensureNativeMediaPermissions(false);
+        try { console.log('CALL_ACCEPT_GUM_PERM_OK ms=' + gumMs()); } catch (_) {}
+        if (!ok) {
+          throw new Error('לא ניתן לגשת למיקרופון. אנא אשר הרשאות באפליקציה.');
+        }
+      }
+      try { console.log('CALL_ACCEPT_GUM_GET_START'); } catch (_) {}
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        },
+        video: false
+      });
+      try { console.log('CALL_ACCEPT_GUM_GET_OK ms=' + gumMs()); } catch (_) {}
+      state.localStream = stream;
+      try {
+        const tracks = stream.getAudioTracks ? stream.getAudioTracks() : [];
+        if (tracks && tracks.length) console.log('CALL_ACCEPT_GUM_TRACK_READY ms=' + gumMs());
+      } catch (_) {}
+      try { console.log('CALL_ACCEPT_GUM_OK ms=' + gumMs()); } catch (_) {}
+      return stream;
+    } catch (err) {
+      console.error('Failed to get local stream', err);
+      throw new Error('לא ניתן לגשת למיקרופון. אנא בדוק הרשאות.');
+    }
+  }
+
+  // LEGACY_READ_ONLY helper — deterministic room ID must NOT be emitted on NEW secure sends.
+  function getRoomId(peerPubkey) {
+    const a = (App.publicKey || '').toLowerCase();
+    const b = (peerPubkey || '').toLowerCase();
+    if (!a || !b) return '';
+    return a < b ? `${a}:${b}` : `${b}:${a}`;
+  }
+
+  function markCallPerf(name) {
+    try {
+      if (App.RealtimePerf && typeof App.RealtimePerf.markCall === 'function') App.RealtimePerf.markCall('voice', name);
+    } catch (_) {}
+  }
+
+  function ensureCallSessionId() {
+    const api = App.CallSignalE2ee;
+    if (state.callSessionId && String(state.callSessionId).length >= 32) return state.callSessionId;
+    if (api && typeof api.createSessionId === 'function') {
+      state.callSessionId = api.createSessionId();
+    } else {
+      const buf = new Uint8Array(16);
+      crypto.getRandomValues(buf);
+      state.callSessionId = Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    return state.callSessionId;
+  }
+
+  // Shared cutover: publishCallSignal picks ONE transport (legacy 25050 XOR gift-wrap 1059).
+  async function sendSignal(peerPubkey, type, data) {
+    if (!App.pool || !App.publicKey || !App.SosCryptoSigner?.hasIdentityKey()) {
+      console.error('CALL_SIGNAL_E2EE_ENCRYPT_FAILED: pool or keys unavailable');
+      throw Object.assign(new Error('CALL_SIGNAL_E2EE_ENCRYPT_FAILED'), { code: 'CALL_SIGNAL_E2EE_ENCRYPT_FAILED' });
+    }
+    const api = App.CallSignalE2ee;
+    if (!api || typeof api.publishCallSignal !== 'function') {
+      throw Object.assign(new Error('CALL_SIGNAL_E2EE_ENCRYPT_FAILED: helper missing'), { code: 'CALL_SIGNAL_E2EE_ENCRYPT_FAILED' });
+    }
+    try {
+      const published = await api.publishCallSignal({
+        media: 'voice',
+        peerPubkey,
+        type,
+        data,
+        sessionId: ensureCallSessionId(),
+        pool: App.pool,
+        relays: (App.CallSignalE2ee && typeof App.CallSignalE2ee.getCallSignalRelays === 'function')
+          ? App.CallSignalE2ee.getCallSignalRelays()
+          : App.relayUrls,
+        senderPubkey: App.publicKey,
+        senderPrivateKey:
+          App.SosCryptoSigner && typeof App.SosCryptoSigner.isWorkerAuthoritative === 'function' && App.SosCryptoSigner.isWorkerAuthoritative()
+            ? undefined
+            : App.SosCryptoSigner.f1CryptoModuleSessionKeyHex(),
+        roomId: getRoomId(peerPubkey),
+      });
+      return published;
+    } catch (err) {
+      const code = err && err.code ? err.code : 'CALL_SIGNAL_E2EE_ENCRYPT_FAILED';
+      console.error('CALL_SIGNAL_SEND_FAILED code=' + code);
+      throw err && err.code ? err : Object.assign(err || new Error(code), { code });
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – שליחת ICE candidates מיידית (trickle) לחיבור מהיר | HYPER CORE TECH
+  function queueCandidate(peerPubkey, candidate) {
+    if (!candidate) {
+      const batch = state.candidateQueue.splice(0);
+      if (batch.length) {
+        sendSignal(peerPubkey, 'candidates', batch);
+      }
+      if (state.candidateTimer) {
+        clearTimeout(state.candidateTimer);
+        state.candidateTimer = null;
+      }
+      return;
+    }
+
+    // trickle מיידי – לא מחכים ל-batch של שנייה+ | HYPER CORE TECH
+    sendSignal(peerPubkey, 'candidate', candidate);
+  }
+
+  function loadEndedCallMap() {
+    // In-memory only — no identity-linked localStorage (sos_voice_ended_v1 removed).
+  }
+
+  function noteCallEnded(peerPubkey) {
+    const pk = peerPubkeyOrEmpty(peerPubkey);
+    if (!pk) return;
+    state.lastEndedAt[pk] = Date.now();
+    try {
+      localStorage.removeItem('sos_voice_ended_v1');
+    } catch (_) {}
+  }
+
+  // Authenticated signals carry a sessionId: replay = that session is terminal. A fresh session from
+  // the same peer is a redial, not a replay (second-granular sentAt cannot tell them apart).
+  function isOfferReplayAfterHangup(peerPubkey, createdAtSec, sessionId) {
+    const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (sid) {
+      const term = terminalBySession.get(sid);
+      if (term && term.ended) return true;
+      try { return typeof App.isCallSessionTerminal === 'function' && !!App.isCallSessionTerminal(sid); } catch (_e) { return false; }
+    }
+    const pk = peerPubkeyOrEmpty(peerPubkey);
+    const at = Number(state.lastEndedAt[pk]) || 0;
+    if (!at || Date.now() - at > 120000) return false;
+    const created = Number(createdAtSec) || 0;
+    if (!created) return false;
+    return created * 1000 <= at + 2000;
+  }
+
+  function peerPubkeyOrEmpty(pk) {
+    return String(pk || '').toLowerCase();
+  }
+
+  function clearIceDisconnectTimer() {
+    if (state.iceDisconnectTimer) {
+      clearTimeout(state.iceDisconnectTimer);
+      state.iceDisconnectTimer = null;
+    }
+  }
+
+  /**
+   * Idempotent bilateral CALL_CONNECTED for voice.
+   * Requires answer readiness (callAnswered) AND usable WebRTC (ICE/PC connected).
+   */
+  function maybeMarkVoiceCallConnected(peerPubkey, reason) {
+    const why = String(reason || 'unknown');
+    const peer = peerPubkeyOrEmpty(peerPubkey) || peerPubkeyOrEmpty(state.currentPeer);
+    const pc = state.peerConnection;
+    const ice = pc ? String(pc.iceConnectionState || '') : '';
+    const cs = pc ? String(pc.connectionState || '') : '';
+    const answerReady = !!state.callAnswered;
+    const webrtcReady = ice === 'connected' || ice === 'completed' || cs === 'connected';
+    try {
+      console.log('CALL_CONNECTED_CHECK reason=' + why
+        + ' answerReady=' + (answerReady ? 1 : 0)
+        + ' ice=' + (ice || '-')
+        + ' pc=' + (cs || '-'));
+    } catch (_) {}
+    if (state.isCallActive) return false;
+    if (state.ending || !pc) {
+      try { console.log('CALL_CONNECTED_DEFER reason=no-active-call'); } catch (_) {}
+      return false;
+    }
+    if (!answerReady) {
+      try { console.log('CALL_CONNECTED_DEFER reason=await-answer'); } catch (_) {}
+      return false;
+    }
+    if (!webrtcReady) {
+      try { console.log('CALL_CONNECTED_DEFER reason=await-webrtc'); } catch (_) {}
+      return false;
+    }
+    clearIceDisconnectTimer();
+    state.isCallActive = true;
+    if (!state.callStartTimestamp) {
+      state.callStartTimestamp = Date.now();
+      state.callStartTime = state.callStartTimestamp;
+    }
+    const sid = String(state.callSessionId || '');
+    const role = state.isIncoming ? 'callee' : 'caller';
+    try {
+      console.log('CALL_CONNECTED session=' + (sid ? sid.slice(0, 8) : 'none') + ' role=' + role);
+    } catch (_) {}
+    markCallPerf('CALL_CONNECTED_TS');
+    markCallPerf('CALL_CONNECTED');
+    try {
+      if (window.SosCallColdBoot && typeof window.SosCallColdBoot.release === 'function') {
+        window.SosCallColdBoot.release('connected');
+      } else if (typeof App.releaseCallColdBoot === 'function') {
+        App.releaseCallColdBoot('connected');
+      }
+    } catch (_) {}
+    if (typeof App.onVoiceCallConnected === 'function') {
+      try { App.onVoiceCallConnected(peer); } catch (_) {}
+    }
+    return true;
+  }
+
+  function isSameCallPeer(peerPubkey) {
+    return !!(state.currentPeer && peerPubkeyOrEmpty(state.currentPeer) === peerPubkeyOrEmpty(peerPubkey));
+  }
+
+  function bufferRemoteCandidates(peerPubkey, candidates) {
+    if (!peerPubkey || !Array.isArray(candidates) || candidates.length === 0) return;
+    if (state.currentPeer && !isSameCallPeer(peerPubkey)) return;
+    const pk = peerPubkeyOrEmpty(peerPubkey);
+    const list = state.pendingRemoteCandidates[pk] || (state.pendingRemoteCandidates[pk] = []);
+    for (const c of candidates) {
+      if (c) list.push(c);
+    }
+    if (list.length > 200) {
+      list.splice(0, list.length - 200);
+    }
+  }
+
+  async function flushRemoteCandidates(peerPubkey) {
+    if (!peerPubkey) return;
+    const pk = peerPubkeyOrEmpty(peerPubkey);
+    const list = state.pendingRemoteCandidates[pk];
+    if (!list || list.length === 0) return;
+    const pc = state.peerConnection;
+    if (!pc || !isSameCallPeer(peerPubkey) || !pc.remoteDescription) return;
+
+    const batch = list.splice(0);
+    let applied = 0;
+    for (const c of batch) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(c));
+        applied += 1;
+      } catch (err) {
+        console.warn('Failed to apply remote ICE (voice)', err);
+      }
+    }
+    if (!list.length) {
+      try { delete state.pendingRemoteCandidates[pk]; } catch {}
+    }
+    if (applied) {
+      console.log('Applied buffered ICE candidates', applied);
+    }
+  }
+
+  async function addOrBufferRemoteCandidates(peerPubkey, candidates) {
+    const list = Array.isArray(candidates) ? candidates.filter(Boolean) : (candidates ? [candidates] : []);
+    if (!list.length) return;
+    const pc = state.peerConnection;
+    const canApply = !!(pc && isSameCallPeer(peerPubkey) && pc.remoteDescription);
+    if (canApply) {
+      for (const c of list) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(c));
+        } catch (err) {
+          console.warn('Failed to apply remote ICE (voice)', err);
+        }
+      }
+      return;
+    }
+    bufferRemoteCandidates(peerPubkey, list);
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – יצירת חיבור WebRTC חדש
+  function createPeerConnection(peerPubkey) {
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+
+    // חלק שיחות קול (chat-voice-call.js) – הוספת הזרם המקומי
+    if (state.localStream) {
+      state.localStream.getTracks().forEach(track => {
+        pc.addTrack(track, state.localStream);
+      });
+    }
+
+    // חלק שיחות קול (chat-voice-call.js) – קבלת הזרם המרוחק
+    pc.ontrack = (event) => {
+      console.log('Received remote track');
+      if (!state.remoteStream) {
+        state.remoteStream = new MediaStream();
+      }
+      event.streams[0].getTracks().forEach(track => {
+        state.remoteStream.addTrack(track);
+        try {
+          track.onended = () => {
+            console.log('Remote track ended');
+            if (!state.ending) endCall({ reason: 'remote_track_ended' });
+          };
+        } catch {}
+      });
+      
+      // עדכון UI
+      if (typeof App.onVoiceCallRemoteStream === 'function') {
+        App.onVoiceCallRemoteStream(state.remoteStream);
+      }
+    };
+
+    // חלק שיחות קול (chat-voice-call.js) – שליחת ICE candidates בצבירה
+    pc.onicecandidate = (event) => {
+      // שולחים רק בצבירה, ובסיום (candidate=null) מבצעים flush
+      queueCandidate(peerPubkey, event.candidate || null);
+    };
+
+    // חלק שיחות קול (chat-voice-call.js) – מעקב אחר מצב החיבור
+    pc.oniceconnectionstatechange = () => {
+      if (state.peerConnection !== pc) return;
+      const ice = pc.iceConnectionState;
+      console.log('ICE connection state:', ice);
+      if (ice === 'checking') markCallPerf('ICE_CHECKING');
+      if ((ice === 'checking' || ice === 'connected') && !state.isIncoming && !state.callAnswered) {
+        try { App.CallSignalE2ee?.nudgeAnswerRecovery?.('ice-before-answer'); } catch (_) {}
+      }
+
+      if (ice === 'connected' || ice === 'completed') {
+        markCallPerf('ICE_CONNECTED');
+        clearIceDisconnectTimer();
+        maybeMarkVoiceCallConnected(peerPubkey, 'ice-' + ice);
+      } else if (ice === 'disconnected') {
+        if (state.iceDisconnectTimer || state.ending) return;
+        state.iceDisconnectTimer = setTimeout(() => {
+          state.iceDisconnectTimer = null;
+          if (state.ending || state.peerConnection !== pc) return;
+          const still = pc.iceConnectionState;
+          if (still === 'disconnected' || still === 'failed' || still === 'closed') {
+            console.log('ICE disconnected persisted, closing call');
+            endCall({ reason: 'ice_disconnected_grace' });
+          }
+        }, ICE_DISCONNECT_GRACE_MS);
+      } else if (ice === 'failed' || ice === 'closed') {
+        clearIceDisconnectTimer();
+        console.log('ICE state ended, closing call');
+        if (!state.ending) endCall({ reason: 'ice_failed' });
+      }
+    };
+
+    // חלק שיחות קול (chat-voice-call.js) – ניטור מצב כלל החיבור
+    pc.onconnectionstatechange = () => {
+      if (state.peerConnection !== pc) return;
+      const cs = pc.connectionState;
+      console.log('Peer connection state:', cs);
+      if (cs === 'connected') {
+        markCallPerf('PC_CONNECTED');
+        clearIceDisconnectTimer();
+        maybeMarkVoiceCallConnected(peerPubkey, 'pc-connected');
+      } else if (cs === 'failed' || cs === 'closed') {
+        clearIceDisconnectTimer();
+        if (!state.ending) endCall({ reason: 'peer_connection_closed' });
+      }
+    };
+
+    return pc;
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – התחלת שיחה יוצאת
+  async function startCall(peerPubkey) {
+    try {
+      const SA = App.SessionAuthority || (typeof window !== 'undefined' && window.SosSessionAuthority);
+      if (SA && typeof SA.assertSessionForSensitiveOp === 'function') {
+        SA.assertSessionForSensitiveOp('START_VOICE_CALL');
+      }
+    } catch (sessionErr) {
+      throw new Error('השיחה נחסמה: הסשן אינו תקף');
+    }
+    if (!isWebRTCSupported()) {
+      throw new Error('הדפדפן שלך לא תומך בשיחות קוליות');
+    }
+
+    if (state.isCallActive) {
+      throw new Error('שיחה כבר פעילה');
+    }
+
+    try {
+      // חלק שיחות קול (chat-voice-call.js) – הגדרת AudioSession לשיחה לפני בקשת מיקרופון (Best Effort) | HYPER CORE TECH
+      setCallAudioSessionType();
+      state.currentPeer = peerPubkey;
+      state.callSessionId = null;
+      markCallPerf('CALL_CLICK_TS');
+      markCallPerf('CALL_CLICK');
+      ensureCallSessionId();
+      markCallPerf('CALL_SESSION_CREATED');
+      // Ring intent (1059, no SDP) goes out before GUM so the callee rings in parallel.
+      markCallPerf('CALL_RING_BUILD_START');
+      sendSignal(peerPubkey, 'ring', null)
+        .then(() => markCallPerf('CALL_RING_PUBLISHED_TS'))
+        .catch(() => { try { console.log('CALL_RING_PUBLISH_FAIL'); } catch (_) {} });
+      markCallPerf('CALL_GUM_START_TS');
+      markCallPerf('GUM_START');
+      await getLocalStream();
+      markCallPerf('CALL_GUM_DONE_TS');
+      markCallPerf('GUM_READY');
+
+      // יצירת חיבור
+      state.peerConnection = createPeerConnection(peerPubkey);
+      // חלק שיחות קול (chat-voice-call.js) – איפוס זמן התחלה עד לחיבור בפועל (connected)
+      state.callStartTimestamp = null;
+      state.callStartTime = null;
+      state.callAnswered = false;
+      clearIceDisconnectTimer();
+      try { delete state.pendingRemoteCandidates[peerPubkeyOrEmpty(peerPubkey)]; } catch {}
+
+      // יצירת offer
+      markCallPerf('OFFER_BUILD_START');
+      const offer = await state.peerConnection.createOffer();
+      if (!offer || !offer.type || !offer.sdp) {
+        throw new Error('Offer לא תקין מהדפדפן');
+      }
+      await state.peerConnection.setLocalDescription(offer);
+
+      // שליחת offer — CALL_STARTED רק אחרי 1059 publish OK
+      markCallPerf('CALL_OFFER_CREATED_TS');
+      const published = await sendSignal(peerPubkey, 'offer', offer);
+      markCallPerf('CALL_OFFER_PUBLISHED_TS');
+      if (!published || published.transport !== 'giftwrap1059') {
+        throw Object.assign(new Error('CALL_SIGNAL_E2EE_ENCRYPT_FAILED: offer publish required'), {
+          code: 'CALL_SIGNAL_E2EE_ENCRYPT_FAILED',
+        });
+      }
+
+      console.log('CALL_STARTED');
+      armOutgoingSetupDeadline(state.callSessionId);
+      try {
+        if (typeof App.reconcilePendingSecureCallSignals === 'function') {
+          App.reconcilePendingSecureCallSignals('outgoing-start');
+        }
+      } catch (_) {}
+      try {
+        if (typeof App.startOutgoingAnswerDrainWatchdog === 'function') {
+          App.startOutgoingAnswerDrainWatchdog({
+            shouldStop: () => !!(state.callAnswered || state.ending || !state.peerConnection),
+          });
+        }
+      } catch (_) {}
+
+      // עדכון UI
+      if (typeof App.onVoiceCallStarted === 'function') {
+        App.onVoiceCallStarted(peerPubkey, false);
+      }
+    } catch (err) {
+      console.error('Failed to start call', err);
+      endCall({ reason: 'start_error' });
+      throw err;
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – קבלת שיחה נכנסת
+  async function acceptCall(peerPubkey, offer) {
+    if (!isWebRTCSupported()) {
+      throw new Error('הדפדפן שלך לא תומך בשיחות קוליות');
+    }
+
+    // כבר בשיחה פעילה עם אותו peer – לא מאפסים SDP (מונע שבירת retries מ-APK) | HYPER CORE TECH
+    try {
+      const samePeer = state.currentPeer && String(state.currentPeer).toLowerCase() === String(peerPubkey || '').toLowerCase();
+      const pc = state.peerConnection;
+      const cs = pc && (pc.connectionState || pc.iceConnectionState);
+      if (samePeer && pc && (state.isCallActive || cs === 'connected' || cs === 'connecting' || cs === 'checking')) {
+        console.log('CALL_ACCEPT_SKIP already_in_call');
+        return;
+      }
+    } catch (_) {}
+
+    const flowT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const flowMs = () => Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - flowT0);
+    try { console.log('CALL_ACCEPT_FLOW_START'); } catch (_) {}
+    markCallPerf('CALL_ACCEPT_TS');
+    markCallPerf('ANSWER_START');
+
+    let answerSent = false;
+    let answeredLocally = false;
+    try {
+      // חלק שיחות קול (chat-voice-call.js) – הגדרת AudioSession לשיחה לפני בקשת מיקרופון (Best Effort) | HYPER CORE TECH
+      setCallAudioSessionType();
+      // קבלת הרשאות מיקרופון
+      try { console.log('CALL_ACCEPT_MEDIA_START'); } catch (_) {}
+      // Mic start and remote offer apply run in parallel; local tracks attach before createAnswer.
+      const streamP = getLocalStream();
+      streamP.catch(() => {});
+
+      // יצירת חיבור
+      state.currentPeer = peerPubkey;
+      // Bind answer publish to the incoming offer session (never invent a fresh sid here).
+      try {
+        const offerSid =
+          (offer && typeof offer === 'object' && offer.sessionId) ? String(offer.sessionId) :
+          (state.waitingOffer && state.waitingOffer.sessionId) ? String(state.waitingOffer.sessionId) :
+          (state.callSessionId ? String(state.callSessionId) : '');
+        if (offerSid && offerSid.length >= 16) {
+          state.callSessionId = offerSid;
+        }
+      } catch (_e) {}
+      state.peerConnection = createPeerConnection(peerPubkey);
+      // חלק שיחות קול (chat-voice-call.js) – איפוס זמן התחלה עד לחיבור בפועל (connected)
+      state.callStartTimestamp = null;
+      state.callStartTime = null;
+      state.callAnswered = false;
+      state.isIncoming = true;
+      clearIceDisconnectTimer();
+
+      const sid = state.callSessionId || '';
+      const pcForAccept = state.peerConnection;
+      let localStream = null;
+      try {
+        if (isOfferApplyBlocked(sid, peerPubkey)) {
+          throw Object.assign(new Error('CALL_STALE_OFFER_APPLY_BLOCK'), { code: 'CALL_STALE_OFFER_APPLY_BLOCK' });
+        }
+
+        // קבלת offer (אימות + נרמול {type,sdp} אחרי סריאליזציה מ-Nostr/QA)
+        const offerNorm = normalizeSessionDescription(offer);
+        if (!offerNorm) {
+          console.error('Invalid offer received', { reason: 'invalid-sdp', type: typeof offer, sdpLength: offer && offer.sdp ? String(offer.sdp).length : 0 });
+          throw new Error('ה-offer שהתקבל אינו תקין');
+        }
+        try { console.log('CALL_ACCEPT_REMOTE_DESCRIPTION_START'); } catch (_) {}
+        console.log('Applying remote offer', { type: offerNorm.type, sdpLen: offerNorm.sdp?.length });
+        const srdP = pcForAccept.setRemoteDescription(offerNorm).then(() => flushRemoteCandidates(peerPubkey));
+        srdP.catch(() => {});
+        localStream = await streamP;
+        try { console.log('CALL_ACCEPT_MIC_READY ms=' + flowMs()); } catch (_) {}
+        try { console.log('CALL_ACCEPT_MEDIA_OK ms=' + flowMs()); } catch (_) {}
+        await srdP;
+        try { console.log('CALL_ACCEPT_REMOTE_DESCRIPTION_OK ms=' + flowMs()); } catch (_) {}
+      } catch (setupErr) {
+        // Let the stream land in state.localStream so the cleanup below stops the mic.
+        await streamP.catch(() => null);
+        throw setupErr;
+      }
+      if (state.peerConnection !== pcForAccept) throw new Error('CALL_ACCEPT_PC_REPLACED');
+      const senders = pcForAccept.getSenders();
+      localStream.getTracks().forEach((t) => {
+        if (!senders.some((s) => s.track === t)) pcForAccept.addTrack(t, localStream);
+      });
+      answeredLocally = true;
+      const termAns = getTerminal(sid);
+      if (termAns) termAns.answeredLocally = true;
+
+      // יצירת answer
+      try { console.log('CALL_ANSWER_BUILD_START'); } catch (_) {}
+      const answer = await state.peerConnection.createAnswer();
+      await state.peerConnection.setLocalDescription(answer);
+      try { console.log('CALL_ANSWER_LOCAL_SET'); } catch (_) {}
+      try { console.log('CALL_ACCEPT_ANSWER_LOCAL_OK ms=' + flowMs()); } catch (_) {}
+      await flushRemoteCandidates(peerPubkey);
+
+      // שליחת answer
+      try { console.log('CALL_ANSWER_PUBLISH_START'); } catch (_) {}
+      await sendSignal(peerPubkey, 'answer', answer);
+      try { console.log('CALL_ANSWER_PUBLISH_OK'); } catch (_) {}
+      try { console.log('CALL_ACCEPT_ANSWER_PUBLISH_OK ms=' + flowMs()); } catch (_) {}
+      answerSent = true;
+      state.callAnswered = true;
+      // Re-evaluate bilateral connected (ICE may already be up before publish).
+      maybeMarkVoiceCallConnected(peerPubkey, 'answer-publish-ok');
+
+      console.log('CALL_ACCEPTED');
+      try { console.log('CALL_ACCEPT_FLOW_READY ms=' + flowMs()); } catch (_) {}
+      try {
+        if (typeof App.reconcilePendingSecureCallSignals === 'function') {
+          App.reconcilePendingSecureCallSignals('incoming-accept');
+        }
+      } catch (_) {}
+
+      // עדכון UI
+      if (typeof App.onVoiceCallStarted === 'function') {
+        App.onVoiceCallStarted(peerPubkey, true);
+      }
+    } catch (err) {
+      console.error('Failed to accept call', err);
+      const sid = state.callSessionId || '';
+      if (answeredLocally || (err && err.code === 'CALL_SIGNAL_TRANSPORT_FAILED')) {
+        try { console.log('CALL_SETUP_FAILED_AFTER_ANSWER'); } catch (_) {}
+      }
+      markJsSessionTerminal(sid, answeredLocally ? 'setup-failed-after-answer' : 'accept-failed');
+      try {
+        if (typeof App.clearSecureOfferCache === 'function') App.clearSecureOfferCache(sid, peerPubkey);
+        else if (App.CallSignalE2ee && App.CallSignalE2ee.clearSecureOfferCache) {
+          App.CallSignalE2ee.clearSecureOfferCache(sid, peerPubkey);
+        }
+      } catch (_) {}
+      try {
+        window.__sosAcceptCancelSession = sid;
+        window.__sosNativePendingAnswer = null;
+        window.__sosAcceptInFlight = false;
+      } catch (_) {}
+      if (answerSent) {
+        endCall({ reason: 'start_error', sessionId: sid });
+      } else {
+        // Tell the caller to stop dialing (session id is bound synchronously inside sendSignal).
+        if (sid && state.currentPeer) {
+          sendSignal(state.currentPeer, 'disconnect', null).catch(() => {});
+        }
+        try {
+          if (state.peerConnection) {
+            state.peerConnection.close();
+            state.peerConnection = null;
+          }
+        } catch (_) {}
+        try {
+          if (state.localStream) {
+            state.localStream.getTracks().forEach((t) => t.stop());
+            state.localStream = null;
+          }
+        } catch (_) {}
+        state.isCallActive = false;
+        state.isIncoming = false;
+        state.currentPeer = null;
+        state.callSessionId = null;
+        state.callAnswered = false;
+        state.ending = false;
+        // Terminal — do NOT leave room for APK autoAccept resurrection.
+        if (sid) {
+          const term = getTerminal(sid);
+          if (term) {
+            term.ended = true;
+            if (answeredLocally) term.answeredLocally = true;
+          }
+        }
+      }
+      throw err;
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – סיום שיחה
+  async function endCall(opts) {
+    const options = opts || {};
+    clearRingOfferDeadline();
+    clearOutgoingSetupDeadline();
+    const sid = state.callSessionId || options.sessionId || '';
+    const term = getTerminal(sid);
+    if (term && term.ended) {
+      console.log('CALL_END_ONCE');
+      // Idempotent local cleanup: terminal latch must not leave stuck session/media.
+      try {
+        if (state.peerConnection) {
+          try { state.peerConnection.close(); } catch (_e) {}
+          state.peerConnection = null;
+        }
+        if (state.localStream) {
+          try { state.localStream.getTracks().forEach((t) => t.stop()); } catch (_e) {}
+          state.localStream = null;
+        }
+        if (state.remoteStream) {
+          try { state.remoteStream.getTracks().forEach((t) => t.stop()); } catch (_e) {}
+          state.remoteStream = null;
+        }
+        state.currentPeer = null;
+        state.isCallActive = false;
+        state.isIncoming = false;
+        state.isMuted = false;
+        state.callAnswered = false;
+        state.callStartTimestamp = null;
+        state.callStartTime = null;
+        state.callSessionId = null;
+        state.ending = false;
+      } catch (_e) {}
+      return;
+    }
+    if (state.ending) return;
+    state.ending = true;
+    if (term) term.ended = true;
+    console.log('CALL_ENDING reason=' + endReason(options));
+    console.log('CALL_END_ONCE');
+    try {
+      if (window.SosCallColdBoot && typeof window.SosCallColdBoot.release === 'function') {
+        window.SosCallColdBoot.release(options && options.failed ? 'failed' : 'ended');
+      }
+    } catch (_) {}
+    try {
+      if (typeof App.stopOutgoingAnswerDrainWatchdog === 'function') {
+        App.stopOutgoingAnswerDrainWatchdog('call-end');
+      }
+    } catch (_) {}
+
+    // שליחת אירוע disconnect – חשוב await כדי שדחייה מ-APK תגיע לצד השני | HYPER CORE TECH
+    if (state.currentPeer && !options.remoteDisconnect) {
+      if (term && term.disconnectSent) {
+        console.log('CALL_DISCONNECT_ONCE');
+      } else {
+        try {
+          await sendSignal(state.currentPeer, 'disconnect', null);
+          if (term) term.disconnectSent = true;
+          console.log('CALL_DISCONNECT_ONCE');
+        } catch (err) {
+          console.warn('disconnect signal failed', err);
+        }
+      }
+    }
+
+    if (sid) {
+      markNativeSessionTerminal(sid, options.declined ? 'DECLINED' : (options.connectedEnd ? 'CONNECTED_END' : 'ENDED'));
+    }
+
+    // חלק שיחות קול (chat-voice-call.js) – חישוב משך שיחה לפי timestamp זמין (תאימות ל-UI ולמדדים) | HYPER CORE TECH
+    const startMs = state.callStartTimestamp || state.callStartTime;
+    const durationSeconds = startMs ? (Date.now() - startMs) / 1000 : 0;
+
+    // חלק שיחות קול (chat-voice-call.js) – זיהוי שיחה נכנסת שלא נענתה (לפני איפוס state) | HYPER CORE TECH
+    const wasIncoming = state.isIncoming;
+    const wasAnswered = !!startMs || !!state.callAnswered || !!(term && term.answeredLocally);
+    const peer = state.currentPeer;
+    const userDeclined = !!(options.declined || (term && term.declined) || window.__sosNativePendingDecline);
+    if (peer) noteCallEnded(peer);
+
+    // סגירת חיבור
+    if (state.peerConnection) {
+      state.peerConnection.close();
+      state.peerConnection = null;
+    }
+
+    // עצירת זרמים
+    if (state.localStream) {
+      state.localStream.getTracks().forEach(track => track.stop());
+      state.localStream = null;
+    }
+
+    if (state.remoteStream) {
+      state.remoteStream.getTracks().forEach(track => track.stop());
+      state.remoteStream = null;
+    }
+
+    // ניקוי תור candidates
+    state.candidateQueue = [];
+    if (state.candidateTimer) {
+      clearTimeout(state.candidateTimer);
+      state.candidateTimer = null;
+    }
+    state.pendingRemoteCandidates = Object.create(null);
+    clearIceDisconnectTimer();
+
+    // איפוס מצב
+    state.currentPeer = null;
+    state.isCallActive = false;
+    state.isIncoming = false;
+    state.isMuted = false;
+    state.callAnswered = false;
+    state.callStartTimestamp = null;
+    state.callStartTime = null;
+    state.callSessionId = null;
+    // חלק שיחות קול (chat-voice-call.js) – שחזור AudioSession לסוג שהיה לפני השיחה | HYPER CORE TECH
+    restoreAudioSessionType();
+    // Do NOT clear session terminal; keep ending latch short only for UI state.
+    setTimeout(() => { state.ending = false; }, 100);
+
+    if (durationSeconds > 0 && peer) {
+      // intentionally no Relay call metric (25060 WRITE ZERO)
+      void publishCallMetric;
+    }
+
+    // Missed-call: never on decline; never after Answer tap; exactly once per session.
+    if (wasIncoming && !wasAnswered && peer && !userDeclined) {
+      const answeredLocally = !!(term && term.answeredLocally);
+      if (answeredLocally) {
+        try { console.log('CALL_MISSED_SKIP reason=answered-locally'); } catch (_) {}
+      } else if (term && term.missedSent) {
+        try { console.log('CALL_MISSED_SKIP reason=already-recorded'); } catch (_) {}
+        console.log('CALL_MISSED_ONCE');
+      } else {
+        if (term) term.missedSent = true;
+        console.log('CALL_MISSED_ONCE');
+        if (typeof App.triggerMissedCallPush === 'function') {
+          App.triggerMissedCallPush(peer, 'voice');
+        }
+        if (typeof App.onVoiceCallMissed === 'function') {
+          App.onVoiceCallMissed(peer);
+        }
+      }
+    } else if (wasIncoming && wasAnswered && peer) {
+      try { console.log('CALL_MISSED_SKIP reason=answered-locally'); } catch (_) {}
+    }
+
+    try {
+      markJsSessionTerminal(sid, endReason(options));
+    } catch (_) {}
+    try {
+      if (typeof App.clearSecureOfferCache === 'function') App.clearSecureOfferCache(sid, peer);
+    } catch (_) {}
+
+    // עדכון UI
+    if (typeof App.onVoiceCallEnded === 'function') {
+      App.onVoiceCallEnded(peer);
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – השתקת/ביטול השתקת מיקרופון
+  function toggleMute() {
+    if (!state.localStream) return;
+
+    state.isMuted = !state.isMuted;
+    state.localStream.getAudioTracks().forEach(track => {
+      track.enabled = !state.isMuted;
+    });
+
+    if (typeof App.onVoiceCallMuteToggle === 'function') {
+      App.onVoiceCallMuteToggle(state.isMuted);
+    }
+
+    return state.isMuted;
+  }
+
+  const RING_OFFER_DEADLINE_MS = 30000;
+
+  function clearRingOfferDeadline() {
+    if (state.ringOfferTimer) {
+      clearTimeout(state.ringOfferTimer);
+      state.ringOfferTimer = null;
+    }
+  }
+
+  function armRingOfferDeadline(peerPubkey, sessionId) {
+    clearRingOfferDeadline();
+    state.ringOfferTimer = setTimeout(() => {
+      state.ringOfferTimer = null;
+      if (state.peerConnection || state.callSessionId !== sessionId || !isSameCallPeer(peerPubkey)) return;
+      console.log('CALL_RING_OFFER_TIMEOUT');
+      endCall({ remoteDisconnect: true, reason: 'remote_disconnect' });
+    }, RING_OFFER_DEADLINE_MS);
+  }
+
+  const OUTGOING_NO_ANSWER_MS = 60000;
+
+  function clearOutgoingSetupDeadline() {
+    if (state.setupTimer) {
+      clearTimeout(state.setupTimer);
+      state.setupTimer = null;
+    }
+  }
+
+  function armOutgoingSetupDeadline(sessionId) {
+    clearOutgoingSetupDeadline();
+    state.setupTimer = setTimeout(() => {
+      state.setupTimer = null;
+      if (state.ending || state.callAnswered || state.isCallActive || state.callSessionId !== sessionId) return;
+      console.log('CALL_SETUP_TIMEOUT');
+      endCall({ reason: 'setup_timeout' });
+    }, OUTGOING_NO_ANSWER_MS);
+  }
+
+  function blockWrongSession(preParsed, action) {
+    if (!preParsed || !preParsed.sessionId || !state.callSessionId) return false;
+    if (String(preParsed.sessionId) === String(state.callSessionId)) return false;
+    const skip = action === 'answer'
+      ? 'session_mismatch_answer'
+      : (action === 'disconnect' ? 'session_mismatch_disconnect' : 'session_mismatch_candidate');
+    console.log('CALL_SIGNAL_SKIP ' + skip);
+    if (action === 'disconnect') console.log('CALL_OLD_SESSION_DISCONNECT_DROP');
+    return true;
+  }
+
+  const END_REASONS = new Set([
+    'user_end',
+    'remote_disconnect',
+    'ice_failed',
+    'ice_disconnected_grace',
+    'peer_connection_closed',
+    'remote_track_ended',
+    'start_error',
+    'decline',
+    'setup_timeout',
+    'page_hide',
+  ]);
+
+  function endReason(options) {
+    const opts = options || {};
+    const raw = opts.reason || (opts.declined ? 'decline' : (opts.remoteDisconnect ? 'remote_disconnect' : 'user_end'));
+    return END_REASONS.has(raw) ? raw : 'user_end';
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – טיפול באירועי סינכרון נכנסים
+  // preParsed: secure gift-wrap path { type, data, sender, sentAt, signalId }
+  async function handleSignalEvent(event, preParsed) {
+    const peerPubkey = preParsed && preParsed.sender
+      ? String(preParsed.sender).toLowerCase()
+      : event.pubkey;
+    if (peerPubkey === App.publicKey) return;
+    
+    // חלק דה-דופליקציה (chat-voice-call.js) – דילוג על אירועים שכבר עובדו (מונע שיחות כפולות אחרי רענון) | HYPER CORE TECH
+    const dedupeId = (preParsed && preParsed.signalId) || event.id;
+    if (dedupeId && isCallEventProcessed(dedupeId)) {
+      // מאפשרים offer שוב אם יש מענה ממתין מ-APK (אחרת השיחה נתקעת בלי SDP) | HYPER CORE TECH
+      try {
+        const pending = window.__sosNativePendingAnswer;
+        const pendingDecline = window.__sosNativePendingDecline;
+        const peer = String(peerPubkey || '').toLowerCase();
+        const allowReplay = (pending && pending.peer === peer && Date.now() < (pending.until || 0))
+          || (pendingDecline && pendingDecline.peer === peer && Date.now() < (pendingDecline.until || 0));
+        if (!allowReplay) {
+          console.log('CALL_SIGNAL_SKIP already_processed');
+          return;
+        }
+      } catch (_) {
+        console.log('CALL_SIGNAL_SKIP already_processed');
+        return;
+      }
+    }
+
+    let type;
+    if (preParsed && preParsed.type) {
+      type = preParsed.type;
+    } else {
+      const typeTag = event.tags.find(t => t[0] === 'type');
+      if (!typeTag) return;
+      type = typeTag[1];
+    }
+    // אותות שידור חי (live-*) לא שייכים לשיחות קול | HYPER CORE TECH
+    if (String(type || '').startsWith('live-')) return;
+
+    try {
+      if (!preParsed && event.content && typeof event.content === 'string' && event.content.length > 524288) {
+        return;
+      }
+      let data = null;
+      if (preParsed) {
+        data = preParsed.data;
+      } else if (event.content) {
+        // LEGACY_READ_ONLY: NIP-04 decrypt for already-deployed clients.
+        const decrypted = await App.SosCryptoSigner.nip04Decrypt(
+          peerPubkey,
+          event.content
+        );
+        data = decrypted ? JSON.parse(decrypted) : null;
+      }
+
+      console.log('CALL_SIGNAL_RECV action=' + String(type) + ' encrypted=' + (preParsed ? 'true' : 'legacy'));
+
+      switch (type) {
+        case 'ring': {
+          // Only the authenticated 1059 path may ring early; legacy 25050 has no ring.
+          if (!preParsed || !preParsed.sessionId) break;
+          if (dedupeId) markCallEventProcessed(dedupeId);
+          if (isOfferReplayAfterHangup(peerPubkey, preParsed.sentAt, preParsed.sessionId)) break;
+          if (state.currentPeer || state.isCallActive || state.peerConnection || window.__sosAcceptInFlight) {
+            console.log('CALL_SIGNAL_SKIP ring_busy');
+            break;
+          }
+          if (window.SosNativeShell) break;
+          state.currentPeer = peerPubkey;
+          state.isIncoming = true;
+          state.callSessionId = preParsed.sessionId;
+          armRingOfferDeadline(peerPubkey, preParsed.sessionId);
+          markCallPerf('CALL_RING_RX_TS');
+          markCallPerf('CALL_REMOTE_RING_SIGNAL_RX');
+          console.log('CALL_RING_RX');
+          if (typeof App.onVoiceCallRinging === 'function') {
+            App.onVoiceCallRinging(peerPubkey);
+            markCallPerf('CALL_REMOTE_RING_UI_SHOWN');
+          }
+          break;
+        }
+
+        case 'offer':
+          // שיחה נכנסת – ולידציה והמרה במקרה הצורך
+          try {
+            const createdAt = preParsed && preParsed.sentAt ? preParsed.sentAt : event.created_at;
+            if (!preParsed && isOfferEventTooOld(event)) {
+              console.log('CALL_SIGNAL_REJECT stale_offer');
+              if (dedupeId) markCallEventProcessed(dedupeId);
+              return;
+            }
+            if (isOfferReplayAfterHangup(peerPubkey, createdAt, preParsed && preParsed.sessionId)) {
+              console.log('CALL_SIGNAL_REJECT replay_after_hangup');
+              if (dedupeId) markCallEventProcessed(dedupeId);
+              return;
+            }
+            let offerData = normalizeSessionDescription(data);
+            if (!offerData) {
+              console.error('CALL_SIGNAL_REJECT invalid_offer');
+              return;
+            }
+            // דה-דופליקציה: מתעלם מהצעות כפולות מאותו peer בחלון קצר
+            const now = Date.now();
+            const last = state.lastOfferFrom[peerPubkey] || 0;
+            state.lastOfferFrom[peerPubkey] = now;
+            if (now - last < 1500) {
+              console.log('CALL_SIGNAL_SKIP duplicate_offer');
+              return;
+            }
+            // כבר בשיחה פעילה עם אותו peer – לא לפתוח דיאלוג שני | HYPER CORE TECH
+            if (state.isCallActive && state.currentPeer && String(state.currentPeer).toLowerCase() === String(peerPubkey).toLowerCase()) {
+              console.log('CALL_SIGNAL_SKIP already_active');
+              if (dedupeId) markCallEventProcessed(dedupeId);
+              return;
+            }
+            // חיבור בתהליך (לפני isCallActive) או accept בתהליך – לא לצלצל שוב | HYPER CORE TECH
+            try {
+              const samePeer = state.currentPeer && String(state.currentPeer).toLowerCase() === String(peerPubkey).toLowerCase();
+              const pc = state.peerConnection;
+              const cs = pc && String(pc.connectionState || pc.iceConnectionState || '');
+              const acceptBusy = !!(window.__sosAcceptInFlight && String(window.__sosAcceptInFlightPeer || '').toLowerCase() === String(peerPubkey).toLowerCase());
+              if (samePeer && (acceptBusy || cs === 'connected' || cs === 'connecting' || cs === 'checking' || cs === 'completed')) {
+                console.log('CALL_SIGNAL_SKIP connecting');
+                if (dedupeId) markCallEventProcessed(dedupeId);
+                return;
+              }
+            } catch (_) {}
+            // חלק דה-דופליקציה (chat-voice-call.js) – סימון האירוע כמעובד כדי שלא יופיע שוב אחרי רענון | HYPER CORE TECH
+            if (dedupeId) markCallEventProcessed(dedupeId);
+            console.log('CALL_OFFER_OK');
+            markCallPerf('CALL_OFFER_RX_TS');
+            markCallPerf('OFFER_REMOTE_RX');
+            // חלק שיחות קול (chat-voice-call.js) – שיחה ממתינה: אם יש שיחה פעילה מפיר אחר, לא מצלצלים אלא מתריעים בלבד | HYPER CORE TECH
+            if (state.isCallActive && state.currentPeer && state.currentPeer !== peerPubkey) {
+              state.waitingOffer = {
+                peer: peerPubkey,
+                offer: offerData,
+                ts: now,
+                sessionId: preParsed && preParsed.sessionId ? preParsed.sessionId : null,
+              };
+              if (typeof App.onVoiceCallWaiting === 'function') {
+                App.onVoiceCallWaiting(peerPubkey, offerData);
+              }
+              return;
+            }
+            // קיבוע peer עבור שיחה נכנסת כדי שאירוע disconnect/ביטול יסגור UI גם לפני קבלה | HYPER CORE TECH
+            if (state.currentPeer && state.currentPeer !== peerPubkey) {
+              console.log('CALL_SIGNAL_SKIP other_context');
+              return;
+            }
+            // אותו peer כבר ב־context (מסך ענה פתוח) – לא לפתוח שוב | HYPER CORE TECH
+            if (state.currentPeer && String(state.currentPeer).toLowerCase() === String(peerPubkey).toLowerCase() && state.isIncoming) {
+              // עדיין מאמצים sessionId מה-offer כדי ש-answer לא יישלח עם sid ישן | HYPER CORE TECH
+              if (preParsed && preParsed.sessionId) state.callSessionId = preParsed.sessionId;
+              if (state.ringOfferTimer) {
+                clearRingOfferDeadline();
+                if (typeof App.onVoiceCallOfferReady === 'function') App.onVoiceCallOfferReady(peerPubkey, offerData);
+              }
+              console.log('CALL_SIGNAL_SKIP already_incoming');
+              return;
+            }
+            state.currentPeer = peerPubkey;
+            state.isIncoming = true;
+            if (preParsed && preParsed.sessionId) state.callSessionId = preParsed.sessionId;
+            // חלק Push (chat-voice-call.js) – שליחת התראת Push על שיחה נכנסת | HYPER CORE TECH
+            if (typeof App.triggerIncomingCallPush === 'function') {
+              App.triggerIncomingCallPush(peerPubkey, 'voice');
+            }
+            if (typeof App.onVoiceCallIncoming === 'function') {
+              App.onVoiceCallIncoming(peerPubkey, offerData);
+              markCallPerf('CALL_REMOTE_RING_UI_SHOWN');
+            }
+          } catch (e) {
+            console.error('CALL_SIGNAL_REJECT offer_parse');
+          }
+          break;
+
+        case 'connect':
+          // הודעת נוכחות/התחברות – לא מפעילים UI ולא משנים incomingOffer
+          console.log('CALL_PEER_PRESENCE');
+          break;
+
+        case 'answer':
+          if (blockWrongSession(preParsed, 'answer')) break;
+          // תשובה לשיחה יוצאת
+          try { console.log('CALL_ANSWER_RX'); } catch (_) {}
+          markCallPerf('CALL_ANSWER_RX_TS');
+          markCallPerf('ANSWER_REMOTE_RX');
+          if (state.peerConnection && state.currentPeer === peerPubkey) {
+            if (state.callAnswered) {
+              try { console.log('CALL_ANSWER_APPLY_SKIP reason=already-applied'); } catch (_) {}
+              break;
+            }
+            try { console.log('CALL_ANSWER_SESSION_OK'); } catch (_) {}
+            const answerData = normalizeSessionDescription(data);
+            if (!answerData) {
+              console.error('CALL_SIGNAL_REJECT invalid_answer');
+              return;
+            }
+            try { console.log('CALL_ANSWER_APPLY_START'); } catch (_) {}
+            console.log('CALL_ANSWER_APPLY');
+            await state.peerConnection.setRemoteDescription(answerData);
+            await flushRemoteCandidates(peerPubkey);
+            state.callAnswered = true;
+            try { console.log('CALL_ANSWER_APPLY_OK'); } catch (_) {}
+            try {
+              if (typeof App.stopOutgoingAnswerDrainWatchdog === 'function') {
+                App.stopOutgoingAnswerDrainWatchdog('answer-applied');
+              }
+            } catch (_) {}
+            // Re-evaluate bilateral connected (ICE may already be up).
+            maybeMarkVoiceCallConnected(peerPubkey, 'answer-apply-ok');
+            // עוצרים חיוג מיד כשמגיע answer – לא מחכים ל-ICE | HYPER CORE TECH
+            if (typeof App.onVoiceCallAnswerReceived === 'function') {
+              App.onVoiceCallAnswerReceived(peerPubkey);
+            }
+          }
+          break;
+
+        case 'candidate':
+          if (blockWrongSession(preParsed, 'candidate')) break;
+          // ICE candidate בודד (תאימות לאחור)
+          if (!isValidIncomingCandidateList(data)) return;
+          await addOrBufferRemoteCandidates(peerPubkey, data);
+          break;
+
+        case 'candidates':
+          if (blockWrongSession(preParsed, 'candidates')) break;
+          // ICE candidates מרובים (batch)
+          if (!isValidIncomingCandidateList(data)) return;
+          await addOrBufferRemoteCandidates(peerPubkey, data);
+          break;
+
+        case 'disconnect':
+          if (blockWrongSession(preParsed, 'disconnect')) break;
+          if (state.currentPeer === peerPubkey) {
+            endCall({ remoteDisconnect: true, reason: 'remote_disconnect' });
+          }
+          break;
+      }
+    } catch (err) {
+      console.error('CALL_SIGNAL_HANDLE_FAILED');
+    }
+  }
+
+  async function handleSecureSignal(logical) {
+    if (!logical || logical.media !== 'voice') return false;
+    const synthetic = {
+      id: logical.wrapId || logical.signalId,
+      pubkey: logical.sender,
+      created_at: logical.sentAt,
+      kind: 1059,
+    };
+    await handleSignalEvent(synthetic, {
+      type: logical.wireType || logical.action,
+      data: logical.data,
+      sender: logical.sender,
+      sentAt: logical.sentAt,
+      signalId: logical.signalId,
+      sessionId: logical.sessionId,
+    });
+    return true;
+  }
+
+  // LEGACY: direct unwrap path removed — use App.CallSignalE2ee.dispatchGiftWrappedCallSignal
+  async function handleGiftWrapCallEvent(ev) {
+    const api = App.CallSignalE2ee;
+    if (api && typeof api.enqueueSecureDispatch === 'function') {
+      await api.enqueueSecureDispatch(ev);
+      return;
+    }
+    if (api && typeof api.dispatchGiftWrappedCallSignal === 'function') {
+      await api.dispatchGiftWrappedCallSignal(ev);
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – זמן התחלת ניסיון הרשמה לתפוס שיחות שנכנסו בזמן טעינה | HYPER CORE TECH
+  let voiceSubscribeStartTime = Date.now();
+  
+  // חלק דה-דופליקציה (chat-voice-call.js) – מניעת עיבוד כפול של אירועי שיחה אחרי רענון | HYPER CORE TECH
+  const PROCESSED_CALLS_KEY = 'sos_processed_call_events_v2';
+  const MAX_PROCESSED_IDS = 100;
+  const PROCESSED_TTL_MS = 10 * 60 * 1000;
+  const MAX_OFFER_AGE_SEC = 60;
+  const VOICE_SIGNAL_MAX_AGE_SEC = 180;
+
+  function getProcessedCallEntries() {
+    try {
+      const raw = localStorage.getItem(PROCESSED_CALLS_KEY) || sessionStorage.getItem(PROCESSED_CALLS_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) return [];
+      const now = Date.now();
+      return parsed.filter(function(e) {
+        if (typeof e === 'string') return true;
+        return e && e.id && (!e.at || (now - e.at) < PROCESSED_TTL_MS);
+      }).map(function(e) {
+        return typeof e === 'string' ? { id: e, at: now } : e;
+      });
+    } catch (_) { return []; }
+  }
+
+  function getProcessedCallIds() {
+    return getProcessedCallEntries().map(function(e) { return e.id; });
+  }
+
+  function markCallEventProcessed(eventId) {
+    try {
+      if (!eventId) return;
+      const now = Date.now();
+      const entries = getProcessedCallEntries().filter(function(e) { return e.id !== eventId; });
+      entries.push({ id: eventId, at: now });
+      while (entries.length > MAX_PROCESSED_IDS) entries.shift();
+      const raw = JSON.stringify(entries);
+      localStorage.setItem(PROCESSED_CALLS_KEY, raw);
+      sessionStorage.setItem(PROCESSED_CALLS_KEY, raw);
+    } catch (_) {}
+  }
+
+  function isCallEventProcessed(eventId) {
+    return getProcessedCallIds().includes(eventId);
+  }
+
+  function isOfferEventTooOld(event) {
+    const created = Number(event && event.created_at) || 0;
+    if (!created) return false;
+    const age = Math.floor(Date.now() / 1000) - created;
+    return age > MAX_OFFER_AGE_SEC;
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – דחייה מ-APK גם בלי offer/UI מוכן | HYPER CORE TECH
+  async function rejectIncoming(peerPubkey) {
+    const peer = String(peerPubkey || state.currentPeer || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(peer)) return false;
+    state.currentPeer = peer;
+    state.isIncoming = true;
+    state.callStartTimestamp = null;
+    state.callStartTime = null;
+    if (!state.callSessionId) {
+      try {
+        const api = App.CallSignalE2ee;
+        if (api && typeof api.getCachedSecureOffer === 'function') {
+          const hit = api.getCachedSecureOffer(peer);
+          if (hit && hit.sessionId) state.callSessionId = hit.sessionId;
+        }
+      } catch (_e) {}
+    }
+    const sid = state.callSessionId || '';
+    const term = getTerminal(sid);
+    if (term) term.declined = true;
+    if (sid) markNativeSessionTerminal(sid, 'DECLINED');
+    try {
+      await endCall({ declined: true, sessionId: sid, reason: 'decline' });
+      return true;
+    } catch (err) {
+      console.warn('rejectIncoming failed', err);
+      try {
+        if (!(term && term.disconnectSent)) {
+          await sendSignal(peer, 'disconnect', null);
+          if (term) term.disconnectSent = true;
+        }
+      } catch (_) {}
+      return false;
+    }
+  }
+
+  // חלק אבטחה (chat-voice-call.js) – אימות חתימת Nostr לסיגנל ריליי 25050 לפני כל שינוי מצב | HYPER CORE TECH
+  function verifyIncomingVoiceRelayEvent(event) {
+    let idLabel = '';
+    try {
+      idLabel = event && event.id ? String(event.id).slice(0, 8) : '';
+      if (!event || typeof event !== 'object') {
+        console.warn('[SO-CALL SECURITY] rejected invalid voice-call signal kind=25050 id=' + idLabel);
+        return false;
+      }
+      const strict = (typeof App.strictVerifyNostrEvent === 'function')
+        ? App.strictVerifyNostrEvent
+        : (window.NostrEventIntegrity && window.NostrEventIntegrity.strictVerifyNostrEvent);
+      if (typeof strict !== 'function' || strict(event) !== true) {
+        console.warn('[SO-CALL SECURITY] rejected invalid voice-call signal kind=25050 id=' + idLabel);
+        return false;
+      }
+      return true;
+    } catch (_err) {
+      console.warn('[SO-CALL SECURITY] rejected invalid voice-call signal kind=25050 id=' + idLabel);
+      return false;
+    }
+  }
+
+  // חלק אבטחה (chat-voice-call.js) – אימות נמען מקומי לאירועי ריליי שאינם של המשתמש הנוכחי | HYPER CORE TECH
+  function getIncomingVoiceRelayRecipient(event) {
+    const tags = event && Array.isArray(event.tags) ? event.tags : [];
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      if (Array.isArray(tag) && tag[0] === 'p') {
+        return typeof tag[1] === 'string' ? tag[1].toLowerCase() : '';
+      }
+    }
+    return '';
+  }
+
+  function verifyIncomingVoiceRelayRecipient(event) {
+    let idLabel = '';
+    try {
+      idLabel = event && event.id ? String(event.id).slice(0, 8) : '';
+      const self = (App.publicKey || '').toLowerCase();
+      const sender = event && typeof event.pubkey === 'string' ? event.pubkey.toLowerCase() : '';
+      if (!self || !sender) {
+        console.warn('[SO-CALL SECURITY] rejected event for wrong recipient kind=25050 id=' + idLabel);
+        return false;
+      }
+      if (sender === self) {
+        return true;
+      }
+      const recipient = getIncomingVoiceRelayRecipient(event);
+      if (!recipient || recipient !== self) {
+        console.warn('[SO-CALL SECURITY] rejected event for wrong recipient kind=25050 id=' + idLabel);
+        return false;
+      }
+      return true;
+    } catch (_err) {
+      console.warn('[SO-CALL SECURITY] rejected event for wrong recipient kind=25050 id=' + idLabel);
+      return false;
+    }
+  }
+
+  function getIncomingVoiceRelayType(event) {
+    const tags = event && Array.isArray(event.tags) ? event.tags : [];
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      if (Array.isArray(tag) && tag[0] === 'type') {
+        return typeof tag[1] === 'string' ? tag[1] : '';
+      }
+    }
+    return '';
+  }
+
+  function isNativePendingVoiceReplay(event) {
+    try {
+      const peer = String(event && event.pubkey || '').toLowerCase();
+      if (!peer) return false;
+      const pending = window.__sosNativePendingAnswer;
+      const pendingDecline = window.__sosNativePendingDecline;
+      return ((pending && pending.peer === peer && Date.now() < (pending.until || 0))
+        || (pendingDecline && pendingDecline.peer === peer && Date.now() < (pendingDecline.until || 0)));
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  // חלק אבטחה (chat-voice-call.js) – רעננות/anti-replay לסיגנל חי אחרי חתימה ונמען | HYPER CORE TECH
+  function verifyIncomingVoiceRelayFreshness(event) {
+    let idLabel = '';
+    try {
+      idLabel = event && event.id ? String(event.id).slice(0, 8) : '';
+      if (isNativePendingVoiceReplay(event)) return true;
+      const created = Number(event && event.created_at) || 0;
+      if (!created) return true;
+      const age = Math.floor(Date.now() / 1000) - created;
+      if (age < 0) return true;
+      const type = getIncomingVoiceRelayType(event);
+      const maxAge = type === 'offer' ? MAX_OFFER_AGE_SEC : VOICE_SIGNAL_MAX_AGE_SEC;
+      if (age > maxAge) {
+        console.warn('[SO-CALL SECURITY] rejected stale or replayed live signal kind=25050 id=' + idLabel);
+        return false;
+      }
+      return true;
+    } catch (_err) {
+      console.warn('[SO-CALL SECURITY] rejected stale or replayed live signal kind=25050 id=' + idLabel);
+      return false;
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – הרשמה לאירועי סינכרון עם since מורחב | HYPER CORE TECH
+  function subscribeToSignals(options) {
+    options = options || {};
+    ensureSignalKeepaliveStarted();
+    if (state.signalSubscription && !options.force) return state.signalSubscription;
+    if (!App.pool || !App.publicKey) {
+      console.log('Voice call: waiting for pool/publicKey...');
+      return null;
+    }
+
+    if (options.force) {
+      closeSubscriptionSafely(state.signalSubscription);
+      state.signalSubscription = null;
+    }
+
+    // since מורחב: לתפוס offer שנשלח כשהמסך היה כבוי | HYPER CORE TECH
+    const lookback = Number.isFinite(Number(options.lookbackSec)) ? Number(options.lookbackSec) : null;
+    const requestedSince = Number.isFinite(Number(options.since)) ? Number(options.since) : null;
+    const timeSinceStart = Math.floor((Date.now() - voiceSubscribeStartTime) / 1000);
+    const since = requestedSince !== null
+      ? Math.max(0, Math.floor(requestedSince))
+      : Math.floor(Date.now() / 1000) - Math.max(
+          lookback != null ? lookback : 0,
+          timeSinceStart + 5,
+          90
+        );
+    const filters = [
+      {
+        // LEGACY_READ_ONLY: direct kind 25050 from already-deployed clients.
+        // Secure kind 1059 is owned by CallSignalE2ee.ensureSecureCallSubscription (single unwrap).
+        kinds: [25050],
+        '#p': [App.publicKey],
+        since
+      }
+    ];
+
+    try {
+      console.log('CALL_SUBSCRIBE legacy=25050 (secure=shared-1059)');
+      try {
+        if (App.CallSignalE2ee && typeof App.CallSignalE2ee.ensureSecureCallSubscription === 'function') {
+          App.CallSignalE2ee.ensureSecureCallSubscription();
+        }
+      } catch (_e) {}
+      const handlers = {
+        onevent: (ev) => {
+          // LEGACY_READ_ONLY path only — 1059 handled by shared dispatcher
+          if (ev && ev.kind === 1059) return;
+          if (!verifyIncomingVoiceRelayEvent(ev)) return;
+          if (!verifyIncomingVoiceRelayRecipient(ev)) return;
+          if (!verifyIncomingVoiceRelayFreshness(ev)) return;
+          state.lastSignalReceivedAt = Date.now();
+          handleSignalEvent(ev);
+        },
+        oneose: () => {
+          state.lastSignalReceivedAt = Date.now();
+          console.log('CALL_SUBSCRIBE_READY');
+          try {
+            if (typeof App.reconcilePendingSecureCallSignals === 'function') {
+              App.reconcilePendingSecureCallSignals('subscribe-ready-legacy');
+            }
+          } catch (_) {}
+        }
+      };
+      const shared = App.CallSignalE2ee && App.CallSignalE2ee.subscribeLegacyCallSignals;
+      const sub = typeof shared === 'function'
+        ? shared('voice', { since, force: !!options.force, onevent: handlers.onevent, oneose: handlers.oneose })
+        : App.pool.subscribeMany(App.relayUrls, filters, handlers);
+      state.signalSubscription = sub;
+      state.lastSignalReceivedAt = Date.now();
+      return sub;
+    } catch (err) {
+      console.warn('CALL_SUBSCRIBE_FAILED');
+      return null;
+    }
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – רענון subscription לאחר idle/חזרה מפוקוס | HYPER CORE TECH
+  function forceResubscribeSignals(reason, options) {
+    if (App.guestMode) return;
+    if (!App.pool || !App.publicKey) return;
+    try { if (typeof navigator !== 'undefined' && navigator.onLine === false) return; } catch {}
+
+  const now = Date.now();
+  const opts = options && typeof options === 'object' ? options : null;
+  const forced = !!(opts && opts.force);
+  if (!forced && now - (state.signalLastResubscribeAt || 0) < 12000) return;
+
+  // שלב 3: בחזרה לטאב — לא סוגרים מנוי בריא | HYPER CORE TECH
+  const softReasons = reason === 'visibilitychange' || reason === 'focus' || reason === 'pageshow';
+  if (!forced && softReasons && state.signalSubscription) {
+    const last = state.lastSignalReceivedAt || 0;
+    if (last && (now - last) < 60000) return;
+  }
+
+  state.signalLastResubscribeAt = now;
+
+  const requestedSince = opts && Number.isFinite(Number(opts.since)) ? Number(opts.since) : null;
+  const since = requestedSince !== null ? Math.max(0, Math.floor(requestedSince)) : Math.max(0, Math.floor(Date.now() / 1000) - 2);
+  console.log('Voice call: re-subscribing signals', reason || '', { since });
+
+  closeSubscriptionSafely(state.signalSubscription);
+  state.signalSubscription = null;
+  state.lastSignalReceivedAt = now;
+  subscribeToSignals({ since, force: true });
+  try {
+    if (App.CallSignalE2ee && typeof App.CallSignalE2ee.ensureSecureCallSubscription === 'function') {
+      App.CallSignalE2ee.ensureSecureCallSubscription({ force: true, reason: String(reason || 'resubscribe') });
+    }
+  } catch (_) {}
+  try {
+    if (typeof App.runWebSecureCallRecovery === 'function') {
+      App.runWebSecureCallRecovery('resubscribe');
+    } else if (App.CallSignalE2ee && typeof App.CallSignalE2ee.runWebSecureCallRecovery === 'function') {
+      App.CallSignalE2ee.runWebSecureCallRecovery('resubscribe');
+    }
+  } catch (_) {}
+}
+
+  // חלק שיחות קול (chat-voice-call.js) – keepalive: רענון אחרי idle, האזנה לפוקוס/רשת | HYPER CORE TECH
+  function ensureSignalKeepaliveStarted() {
+    if (state.signalKeepaliveTimer) return;
+    try {
+      document.addEventListener('visibilitychange', () => {
+        try { if (!document.hidden) forceResubscribeSignals('visibilitychange'); } catch {}
+      });
+    } catch {}
+    try { window.addEventListener('online', () => forceResubscribeSignals('online')); } catch {}
+    // Leaving the page mid-call: tell the peer (best effort). An unanswered incoming ring is not declined.
+    try {
+      window.addEventListener('pagehide', (ev) => {
+        if (ev && ev.persisted) return;
+        if (!state.currentPeer || state.ending) return;
+        if (state.isIncoming && !state.callAnswered && !state.isCallActive) return;
+        endCall({ reason: 'page_hide' });
+      });
+    } catch {}
+    // שלב 3: בלי focus/pageshow — visibilitychange מספיק | HYPER CORE TECH
+
+    state.signalKeepaliveTimer = setInterval(() => {
+      try {
+        if (App.guestMode) return;
+        if (!App.pool || !App.publicKey) return;
+        try { if (typeof navigator !== 'undefined' && navigator.onLine === false) return; } catch {}
+        if (document.hidden) return;
+
+        const now = Date.now();
+        const last = state.lastSignalReceivedAt || 0;
+        if (!state.signalSubscription) {
+          subscribeToSignals();
+          return;
+        }
+        if (last && (now - last) > 90000) {
+          forceResubscribeSignals('keepalive');
+        }
+      } catch (err) {
+        console.warn('Voice call keepalive error', err);
+      }
+    }, 30000);
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – אתחול הרשמה אוטומטית לסיגנלים עם retry מהיר | HYPER CORE TECH
+  function autoSubscribeSignals() {
+    // אורחים: לא מפעילים שיחות קול כדי למנוע UX תקול
+    if (App.guestMode) {
+      return;
+    }
+    if (state.signalSubscription) {
+      return;
+    }
+    if (!App.pool || !App.publicKey) {
+      setTimeout(autoSubscribeSignals, 300); // מהיר יותר - 300ms במקום 500ms
+      return;
+    }
+    subscribeToSignals();
+  }
+
+  // חלק שיחות קול (chat-voice-call.js) – חשיפת API
+  Object.assign(App, {
+    voiceCall: {
+      isSupported: isWebRTCSupported,
+      start: startCall,
+      accept: acceptCall,
+      end: endCall,
+      rejectIncoming,
+      toggleMute,
+      getState: () => ({ ...state }),
+      maybeMarkConnected: maybeMarkVoiceCallConnected,
+      subscribe: subscribeToSignals,
+      handleSecureSignal,
+      markEventProcessed: markCallEventProcessed,
+      verifyIncomingRelayEvent: verifyIncomingVoiceRelayEvent,
+      verifyIncomingRelayRecipient: verifyIncomingVoiceRelayRecipient,
+      verifyIncomingRelayFreshness: verifyIncomingVoiceRelayFreshness
+    }
+  });
+
+  // חלק שיחות קול (chat-voice-call.js) – אתחול אוטומטי
+  if (typeof App.notifyPoolReady === 'function') {
+    const originalNotify = App.notifyPoolReady;
+    App.notifyPoolReady = function(pool) {
+      originalNotify(pool);
+      subscribeToSignals();
+    };
+  }
+
+  // חלק Lazy Init (chat-voice-call.js) – דחיית האזנה לסיגנלים עד שהמשתמש פותח צ'אט | HYPER CORE TECH
+  // מונע עומס מיותר על מכשירים חלשים ועל הrelays
+  function lazyInitVoiceCall(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const force = !!opts.force;
+    if (state.lazyInitDone && !force) {
+      autoSubscribeSignals();
+      return;
+    }
+    state.lazyInitDone = true;
+    if (force || opts.lookbackSec) {
+      const lookback = Number(opts.lookbackSec) || 90;
+      forceResubscribeSignals('lazy-force', {
+        since: Math.floor(Date.now() / 1000) - lookback
+      });
+      // forceResubscribe → subscribeToSignals; ensure force path if empty
+      if (!state.signalSubscription) {
+        subscribeToSignals({ force: true, lookbackSec: lookback });
+      }
+    } else {
+      autoSubscribeSignals();
+    }
+    console.log('Voice call: lazy init completed', opts);
+  }
+  state.lazyInitDone = false;
+
+  // האזנה לפתיחת צ'אט כדי להתחיל את השירות
+  function setupLazyTrigger() {
+    const chatButton = document.getElementById('chatToggle') || document.querySelector('[data-chat-toggle]');
+    if (chatButton) {
+      chatButton.addEventListener('click', lazyInitVoiceCall, { once: true });
+    }
+    // גם כשמקבלים הודעת צ'אט או שיחה נכנסת
+    if (App.pool && App.publicKey && !App.guestMode) {
+      // הפעלה אוטומטית אחרי 10 שניות אם המשתמש מחובר (למקרה של שיחות נכנסות)
+      setTimeout(lazyInitVoiceCall, 10000);
+    }
+  }
+
+  try {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', setupLazyTrigger);
+    } else {
+      setupLazyTrigger();
+    }
+  } catch (_) {}
+
+  // חשיפת פונקציה לאתחול ידני מבחוץ | HYPER CORE TECH
+  App.initVoiceCall = lazyInitVoiceCall;
+
+  console.log('Voice call module loaded (lazy init)');
+  loadEndedCallMap();
+})(window);

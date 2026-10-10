@@ -1,0 +1,930 @@
+/* חלק שידור חי (live-stream.css) – סטודיו מסודר בסגנון SOS: דסקטופ + מובייל | HYPER CORE TECH */
+
+body.live-studio-open {
+  overflow: hidden;
+}
+
+.live-studio {
+  position: fixed;
+  inset: 0;
+  z-index: 11000;
+  background: #000;
+  color: #fff;
+  direction: rtl;
+}
+
+@media (min-width: 769px) {
+  .live-studio {
+    right: var(--videos-desktop-nav-width, 220px);
+  }
+}
+
+.live-studio__shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.live-studio__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  padding-top: calc(12px + var(--safe-top, 0px));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #000;
+  flex-shrink: 0;
+}
+
+.live-studio__close {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.live-studio__header-text {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.live-studio__header-text h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.live-studio__pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: #fe2c55;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.live-studio__timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.live-studio__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+@media (min-width: 769px) {
+  .live-studio__body {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+}
+
+.live-studio__preview-wrap {
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: #050505;
+}
+
+.live-studio__preview-frame {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  background: #111;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  transition: width 0.2s ease, height 0.2s ease, aspect-ratio 0.2s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+.live-studio[data-phase="live"] .live-studio__preview-frame {
+  border-color: rgba(254, 44, 85, 0.55);
+  box-shadow:
+    0 0 0 1px rgba(254, 44, 85, 0.25),
+    0 0 28px rgba(254, 44, 85, 0.28),
+    0 0 48px rgba(0, 175, 255, 0.12),
+    0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.live-studio[data-phase="live"] .live-studio__preview-frame::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(254, 44, 85, 0.12) 0%, transparent 28%, transparent 72%, rgba(0, 175, 255, 0.1) 100%);
+  z-index: 3;
+}
+
+.live-studio[data-phase="live"] {
+  background: radial-gradient(1200px 600px at 50% 0%, rgba(254, 44, 85, 0.12), transparent 55%), #000;
+}
+
+/* מסגרת תצוגה בלבד — הווידאו object-fit:cover בתוך המסגרת */
+.live-studio[data-aspect="portrait"] .live-studio__preview-frame {
+  width: min(100%, 360px);
+  aspect-ratio: 9 / 16;
+  max-height: min(68vh, 720px);
+}
+
+.live-studio[data-aspect="landscape"] .live-studio__preview-frame {
+  width: min(100%, 720px);
+  aspect-ratio: 16 / 9;
+  max-height: min(58vh, 480px);
+}
+
+.live-studio__hearts {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  overflow: hidden;
+}
+
+.live-studio__heart {
+  position: absolute;
+  bottom: 12%;
+  left: 50%;
+  font-size: 28px;
+  line-height: 1;
+  transform: translateX(calc(-50% + var(--hx, 0px))) scale(var(--hs, 1));
+  animation: live-heart-float 2.1s ease-out forwards;
+  filter: drop-shadow(0 4px 10px rgba(254, 44, 85, 0.45));
+  user-select: none;
+}
+
+@keyframes live-heart-float {
+  0% {
+    opacity: 0;
+    transform: translateX(calc(-50% + var(--hx, 0px))) translateY(18px) scale(calc(var(--hs, 1) * 0.7));
+  }
+  12% { opacity: 1; }
+  100% {
+    opacity: 0;
+    transform: translateX(calc(-50% + var(--hx, 0px))) translateY(-220px) scale(calc(var(--hs, 1) * 1.15));
+  }
+}
+
+.live-studio__side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  padding-bottom: calc(16px + var(--safe-bottom, 0px));
+  background: #0a0a0a;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@media (min-width: 769px) {
+  .live-studio__side {
+    border-top: none;
+    border-inline-start: 1px solid rgba(255, 255, 255, 0.08);
+    justify-content: flex-start;
+    align-self: stretch;
+    min-height: 0;
+  }
+
+  .live-studio__side--live {
+    justify-content: flex-start;
+    gap: 12px;
+    overflow: hidden;
+  }
+}
+
+.live-studio__live-top {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.live-studio__host {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(254, 44, 85, 0.16), rgba(0, 175, 255, 0.08));
+  border: 1px solid rgba(254, 44, 85, 0.25);
+}
+
+.live-studio__host-av {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.35);
+  border: 2px solid #fe2c55;
+  font-size: 12px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.live-studio__host-av img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.live-studio__host-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.live-studio__host-meta strong {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-studio__host-live {
+  font-size: 11px;
+  color: #fe2c55;
+  font-weight: 700;
+}
+
+.live-studio__pill--pulse {
+  animation: live-pill-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes live-pill-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(254, 44, 85, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(254, 44, 85, 0); }
+}
+
+.live-studio__like-count {
+  margin-inline-start: auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(254, 44, 85, 0.18);
+  color: #ff8aa5;
+  font-weight: 800;
+  font-size: 12px;
+}
+
+.live-studio__chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  overflow: hidden;
+}
+
+.live-studio__chat-head {
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.live-studio__chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.live-studio__chat-empty {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+  text-align: center;
+  padding: 24px 8px;
+}
+
+.live-studio__chat-item {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: right;
+}
+
+.live-studio__chat-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 175, 255, 0.25);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.live-studio__chat-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.live-studio__chat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.live-studio__chat-item strong {
+  font-size: 11px;
+  color: #00afff;
+}
+
+.live-studio__chat-item.is-self {
+  background: rgba(254, 44, 85, 0.12);
+  border: 1px solid rgba(254, 44, 85, 0.2);
+}
+
+.live-studio__chat-item.is-self strong {
+  color: #ff8aa5;
+}
+
+.live-studio__chat-item span {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.92);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.live-studio__chat-compose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+  flex-shrink: 0;
+}
+
+.live-studio__chat-input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  padding: 0 14px;
+  font-size: 13px;
+  outline: none;
+}
+
+.live-studio__chat-input:focus {
+  border-color: rgba(0, 175, 255, 0.55);
+}
+
+.live-studio__chat-send {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: #fe2c55;
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.live-studio__chat-send:hover {
+  filter: brightness(1.08);
+}
+
+@media (max-width: 768px) {
+  .live-studio__chat {
+    min-height: 140px;
+    max-height: 28vh;
+  }
+}
+
+.live-studio__side[hidden],
+.live-studio__side[style*="display: none"] {
+  display: none !important;
+}
+
+.live-studio__side-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.live-studio__label {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.live-studio__input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  padding: 12px 14px;
+  font-size: 15px;
+  outline: none;
+}
+
+.live-studio__input:focus {
+  border-color: #00afff;
+  box-shadow: 0 0 0 3px rgba(0, 175, 255, 0.18);
+}
+
+.live-studio__help {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  line-height: 1.35;
+}
+
+.live-studio__seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.live-studio__seg-btn {
+  border: none;
+  border-radius: 9px;
+  padding: 10px 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.live-studio__seg-btn.is-active {
+  background: rgba(0, 175, 255, 0.18);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(0, 175, 255, 0.45);
+}
+
+.live-studio__btn {
+  border: none;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.live-studio__btn--block {
+  width: 100%;
+}
+
+.live-studio__btn--primary {
+  background: #00afff;
+  color: #000;
+}
+
+.live-studio__btn--danger {
+  background: #fe2c55;
+  color: #fff;
+}
+
+.live-studio__btn--ghost {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.live-studio__live-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-start;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(254, 44, 85, 0.1);
+  border: 1px solid rgba(254, 44, 85, 0.28);
+  font-size: 13px;
+}
+
+.live-studio__confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 20px;
+}
+
+.live-studio__confirm-card {
+  width: min(100%, 340px);
+  background: #12151a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 16px;
+  text-align: right;
+}
+
+.live-studio__confirm-card h3 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.live-studio__confirm-card p {
+  margin: 0 0 14px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+}
+
+.live-studio__confirm-row {
+  display: flex;
+  gap: 8px;
+}
+
+.live-studio__confirm-row .live-studio__btn {
+  flex: 1;
+}
+
+/* מובייל: תצוגה מקדימה למעלה, פאנל שליטה מסודר מתחת */
+@media (max-width: 768px) {
+  .live-studio__preview-wrap {
+    padding: 10px 12px 0;
+    flex: 1;
+  }
+
+  .live-studio[data-aspect="portrait"] .live-studio__preview-frame {
+    width: min(100%, 320px);
+    max-height: 52vh;
+  }
+
+  .live-studio[data-aspect="landscape"] .live-studio__preview-frame {
+    width: 100%;
+    max-height: 36vh;
+  }
+
+  .live-studio__body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .live-studio__side {
+    flex-shrink: 0;
+  }
+}
+
+/* כרטיס P2P LIVE בפיד */
+.videos-p2p-live-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 4px;
+  background: #fe2c55;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.videos-p2p-live-badge__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.videos-p2p-live-hint {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  font-weight: 700;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* צ'אט צופים מעל הווידאו — לא משנה גובה/פריסת כרטיס | HYPER CORE TECH */
+.videos-feed__media[data-media-type="p2p-live"] {
+  overflow: hidden;
+}
+
+.videos-p2p-live-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+  max-height: 58%;
+  padding: 10px 12px calc(10px + var(--safe-bottom, 0px));
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.55) 70%);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.videos-p2p-live-chat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: min(42vh, 280px);
+  min-height: 120px;
+  pointer-events: auto;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+}
+
+.videos-p2p-live-chat-item {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 88%;
+  animation: live-chat-in 0.22s ease-out;
+}
+
+@keyframes live-chat-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.videos-p2p-live-chat-av {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 175, 255, 0.35);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.videos-p2p-live-chat-av img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.videos-p2p-live-chat-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  text-align: right;
+}
+
+.videos-p2p-live-chat-bubble strong {
+  font-size: 11px;
+  color: #7fd9ff;
+}
+
+.videos-p2p-live-chat-item.is-self .videos-p2p-live-chat-bubble {
+  background: rgba(254, 44, 85, 0.55);
+}
+
+.videos-p2p-live-chat-item.is-self .videos-p2p-live-chat-bubble strong {
+  color: #ffd0da;
+}
+
+.videos-p2p-live-chat-bubble span {
+  font-size: 13px;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.videos-p2p-live-compose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.videos-p2p-live-compose__input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  padding: 0 14px;
+  font-size: 13px;
+  outline: none;
+}
+
+.videos-p2p-live-compose__input:focus {
+  border-color: rgba(254, 44, 85, 0.7);
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.videos-p2p-live-compose__send {
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: #fe2c55;
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.videos-p2p-live-hearts {
+  position: absolute;
+  right: 12px;
+  bottom: 56px;
+  width: 70px;
+  height: 160px;
+  pointer-events: none;
+  z-index: 8;
+}
+
+.videos-p2p-live-heart {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  font-size: 22px;
+  transform: translateX(calc(-50% + var(--hx, 0px)));
+  animation: live-heart-float 1.9s ease-out forwards;
+  filter: drop-shadow(0 3px 8px rgba(254, 44, 85, 0.4));
+}
+
+.videos-p2p-live-badge.is-off {
+  background: rgba(120, 120, 120, 0.9);
+}
+
+.videos-p2p-live-badge.is-off .videos-p2p-live-badge__dot {
+  animation: none;
+  opacity: 0.5;
+}
+
+.videos-p2p-live-ended {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 10, 14, 0.88);
+  padding: 24px;
+}
+
+.videos-p2p-live-ended__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  color: #fff;
+  max-width: 260px;
+}
+
+.videos-p2p-live-ended__card i {
+  font-size: 28px;
+  color: #fe2c55;
+  margin-bottom: 4px;
+}
+
+.videos-p2p-live-ended__card strong {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.videos-p2p-live-ended__card span {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.4;
+}
+
+/* באנר TikTok-like: משתמש התחיל לשדר */
+.live-go-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translate(-50%, -120%);
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: min(92vw, 360px);
+  max-width: min(94vw, 420px);
+  padding: 10px 12px 10px 10px;
+  border: 0;
+  border-radius: 16px;
+  background: rgba(18, 18, 22, 0.94);
+  color: #fff;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  text-align: right;
+  transition: transform 0.28s ease, opacity 0.28s ease;
+  opacity: 0;
+  font: inherit;
+}
+
+.live-go-banner.is-visible {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+
+.live-go-banner__avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #fe2c55, #00afff);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+  border: 2px solid rgba(254, 44, 85, 0.85);
+}
+
+.live-go-banner__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.live-go-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.live-go-banner__text strong {
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-go-banner__text span {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.live-go-banner__cta {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: #fe2c55;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.live-toast { display: none !important; }

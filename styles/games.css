@@ -1,0 +1,404 @@
+/* ========================================
+   SOS Play - פיד משחקים (אותו מבנה כמו videos-feed)
+   HYPER CORE TECH
+   ======================================== */
+
+:root {
+  --games-bg: #000;
+  --games-accent: #e8e8e8;
+  --games-accent-glow: rgba(255, 255, 255, 0.25);
+  --games-text: #ffffff;
+  --games-text-muted: rgba(255, 255, 255, 0.7);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body.games-page {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--games-bg);
+  color: var(--games-text);
+  font-family: "Segoe UI", "Heebo", "Rubik", sans-serif;
+  direction: rtl;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* סרגל עליון */
+.games-top-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(56px + var(--safe-top));
+  padding-top: var(--safe-top);
+  padding-inline: 12px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.92) 0%, rgba(0, 0, 0, 0.45) 75%, transparent 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 120;
+  pointer-events: none;
+}
+
+.games-top-bar__btn,
+.games-top-bar__title,
+.games-top-menu {
+  pointer-events: auto;
+}
+
+.games-top-bar__btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.games-top-bar__btn:active {
+  transform: scale(0.95);
+}
+
+.games-top-bar__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.games-top-bar__title i {
+  color: var(--games-accent);
+  font-size: 22px;
+  filter: drop-shadow(0 0 8px var(--games-accent-glow));
+}
+
+.games-top-menu {
+  position: absolute;
+  top: calc(56px + var(--safe-top) + 4px);
+  left: 12px;
+  min-width: 200px;
+  background: rgba(18, 18, 18, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 130;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.games-top-menu[hidden] {
+  display: none !important;
+}
+
+.games-top-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  text-align: right;
+  padding: 12px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.games-top-menu__item:hover,
+.games-top-menu__item:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.games-top-menu__item i {
+  width: 18px;
+  text-align: center;
+  opacity: 0.9;
+}
+
+/* פיד – מלא מסך מתחת לסרגל */
+body.games-page .videos-feed.games-feed {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 1;
+}
+
+body.games-page .videos-feed__viewport.games-feed__viewport {
+  position: absolute;
+  inset: 0;
+  height: 100dvh;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-top: 0;
+  padding-bottom: 0;
+  scroll-padding-top: 0;
+  scroll-padding-bottom: 0;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+}
+
+body.games-page .videos-feed__viewport.games-feed__viewport::-webkit-scrollbar {
+  display: none;
+}
+
+body.games-page .videos-feed__stream {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* כרטיס מלא מסך (בלי מרווח תפריט תחתון של videos) */
+body.games-page .videos-feed__card.games-feed__card {
+  height: 100dvh;
+  min-height: 100dvh;
+  max-height: 100dvh;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  background: #000;
+  contain-intrinsic-size: 100vw 100dvh;
+  display: block;
+  flex-direction: unset;
+  direction: rtl;
+  align-items: unset;
+  justify-content: unset;
+  gap: 0;
+  padding-bottom: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+body.games-page .videos-feed__media,
+body.games-page .videos-feed__media.videos-feed__media--game {
+  position: absolute !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  min-width: 0 !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  order: unset !important;
+  flex-shrink: 1 !important;
+}
+
+body.games-page .videos-feed__actions {
+  position: absolute !important;
+  right: 12px !important;
+  left: auto !important;
+  bottom: calc(88px + var(--safe-bottom)) !important;
+  top: auto !important;
+  z-index: 40 !important;
+  width: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  order: unset !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 14px !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+}
+
+body.games-page .videos-feed__info {
+  position: absolute !important;
+  left: 16px !important;
+  right: 88px !important;
+  bottom: calc(28px + var(--safe-bottom)) !important;
+  top: auto !important;
+  transform: none !important;
+  z-index: 40;
+  padding: 0 !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  width: auto !important;
+  pointer-events: auto;
+  text-align: right;
+  direction: rtl;
+}
+
+/* דסקטופ: לא לפרוס כמו TikTok של הפיד הראשי – משחק מלא מסך בתוך הפאנל | HYPER CORE TECH */
+@media (min-width: 769px) {
+  body.games-page .videos-feed.games-feed {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    transform: none !important;
+    display: block !important;
+  }
+
+  body.games-page .videos-feed__viewport.games-feed__viewport {
+    display: block !important;
+    justify-content: unset !important;
+    align-items: unset !important;
+    padding: 0 !important;
+  }
+
+  body.games-page .videos-feed__stream {
+    align-items: stretch !important;
+    width: 100% !important;
+  }
+
+  body.games-page .videos-feed__card.games-feed__card {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100dvh !important;
+    min-height: 100dvh !important;
+    max-height: 100dvh !important;
+    display: block !important;
+    flex-direction: unset !important;
+    direction: rtl !important;
+    overflow: hidden !important;
+    background: #000 !important;
+    padding: 0 !important;
+    gap: 0 !important;
+  }
+
+  body.games-page .videos-feed__media,
+  body.games-page .videos-feed__media.videos-feed__media--game {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    min-width: 0 !important;
+    border-radius: 0 !important;
+  }
+
+  body.games-page .videos-feed__actions {
+    position: absolute !important;
+    right: 24px !important;
+    left: auto !important;
+    bottom: 120px !important;
+    transform: none !important;
+    order: unset !important;
+    padding: 0 !important;
+  }
+
+  body.games-page .videos-feed__info {
+    left: 24px !important;
+    right: 100px !important;
+    bottom: 40px !important;
+    transform: none !important;
+    max-width: none !important;
+    min-width: 0 !important;
+  }
+}
+
+.games-feed__catalog-badge {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #111;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+/* אינדיקטור – LTR כדי שיופיע 1 / N ולא הפוך | HYPER CORE TECH */
+.games-indicator {
+  position: fixed;
+  top: calc(64px + var(--safe-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.9);
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.games-indicator__separator {
+  opacity: 0.55;
+}
+
+/* ריק */
+.games-empty {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  background: #000;
+  color: #fff;
+}
+
+.games-empty[hidden] {
+  display: none !important;
+}
+
+.games-empty i {
+  font-size: 42px;
+  opacity: 0.85;
+  margin-bottom: 8px;
+}
+
+.games-empty p {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.games-empty span {
+  color: var(--games-text-muted);
+  font-size: 14px;
+  max-width: 280px;
+  line-height: 1.45;
+}
+
+/* מסך מלא של game-embed מעל הכל */
+body.game-embed-fullscreen .games-top-bar,
+body.game-embed-fullscreen .games-indicator {
+  opacity: 0;
+  pointer-events: none;
+}
