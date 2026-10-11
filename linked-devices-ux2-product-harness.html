@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Product Linked Devices UX2</title>
+  <style>
+    body{font-family:system-ui,sans-serif;margin:16px;background:#111;color:#f2f2f2}
+    button{width:100%;padding:14px;margin:8px 0;font-size:16px}
+    #log{white-space:pre-wrap;font-size:12px;opacity:.9}
+  </style>
+</head>
+<body>
+  <h1>קישור מכשירים — UX2</h1>
+  <p>בדיקת בעלות אירוע אחת. ללא אישור / LINKED.</p>
+  <div id="topBarProfileMenu"></div>
+  <button id="btnProduct" type="button">פעולה ראשית (מוצר)</button>
+  <button id="btnForceMobile" type="button">כפה סריקת מצלמה</button>
+  <button id="btnForceDesktop" type="button">כפה הצגת QR</button>
+  <div id="log"></div>
+  <script>
+    window.NostrApp = { guestMode: true, publicKey: '' };
+    const Q = ''
+    const V = '20261011ux2';
+    function load(src){
+      return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.onload=res; s.onerror=rej; document.body.appendChild(s); });
+    }
+    const logEl=document.getElementById('log');
+    function log(m){ logEl.textContent += m+'\n'; }
+    (async () => {
+      await load(Q+'/sos-md2-pairing-qr.js?v='+V+'&pkg=qa-stage5-ux2');
+      await load(Q+'/sos-web-linked-qr-scanner.js?v='+V+'&pkg=qa-stage5-ux2');
+      await load(Q+'/sos-web-linked-devices.js?v='+V+'&pkg=qa-stage5-ux2');
+      const LD = window.SosWebLinkedDevices || NostrApp.WebLinkedDevices;
+      const Md2 = window.SosMd2PairingQr || NostrApp.Md2PairingQr;
+      log('origin='+location.origin+' secure='+isSecureContext);
+      log('LD='+!!LD+' Md2='+!!Md2);
+      log('LEGACY_UI='+ (Md2 && Md2.LEGACY_MD2_PRODUCT_UI));
+      log('SYNTHETIC='+ (Md2 && Md2.SYNTHETIC_QR_FALLBACK));
+      log('CLASSIFY='+JSON.stringify(LD.classifyLinkedDevicesSurface()));
+      // Wire product button via same API only
+      document.getElementById('btnProduct').onclick = () => LD.openLinkedDevicesPrimaryAction();
+      document.getElementById('btnForceMobile').onclick = () => LD.openLinkedDevicesPrimaryAction({forceRole:'MOBILE_PRIMARY'});
+      document.getElementById('btnForceDesktop').onclick = () => {
+        const r = LD.openLinkedDevicesPrimaryAction({forceRole:'DESKTOP_DESTINATION'});
+        log('DESKTOP_R='+JSON.stringify(r));
+        const legacy = document.getElementById('sosMd2PairingPanel');
+        log('LEGACY_PANEL='+!!(legacy && legacy.hidden===false));
+        const desk = document.getElementById('sosLinkedPairPanel');
+        log('DESK_PANEL='+!!(desk && desk.hidden===false));
+      };
+      // Prove openPairingQrPanel is disabled
+      const disabled = Md2.openPairingQrPanel({});
+      log('OPEN_LEGACY='+JSON.stringify(disabled));
+      const stale = document.getElementById('sosMd2PairingPanel');
+      log('MD2_MODAL_VISIBLE='+!!(stale && stale.hidden===false));
+    })().catch(e => log('LOAD_FAIL '+e));
+  </script>
+</body>
+</html>
